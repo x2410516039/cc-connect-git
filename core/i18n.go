@@ -247,8 +247,8 @@ const (
 	MsgCronBtnUnmute    MsgKey = "cron_btn_unmute"
 	MsgCronBtnDelete    MsgKey = "cron_btn_delete"
 
-	MsgStatusTitle          MsgKey = "status_title"
-	MsgReplyFooterRemaining MsgKey = "reply_footer_remaining"
+	MsgStatusTitle           MsgKey = "status_title"
+	MsgReplyFooterRemaining  MsgKey = "reply_footer_remaining"
 	MsgModelCurrent          MsgKey = "model_current"
 	MsgModelChanged          MsgKey = "model_changed"
 	MsgModelChangeFailed     MsgKey = "model_change_failed"
@@ -440,10 +440,10 @@ const (
 	MsgCommandDisabled   MsgKey = "command_disabled"
 	MsgAdminRequired     MsgKey = "admin_required"
 	MsgRateLimited       MsgKey = "rate_limited"
-	MsgPsSent       MsgKey = "ps_sent"
-	MsgPsSendFailed MsgKey = "ps_send_failed"
-	MsgPsEmpty      MsgKey = "ps_empty"
-	MsgPsNoSession  MsgKey = "ps_no_session"
+	MsgPsSent            MsgKey = "ps_sent"
+	MsgPsSendFailed      MsgKey = "ps_send_failed"
+	MsgPsEmpty           MsgKey = "ps_empty"
+	MsgPsNoSession       MsgKey = "ps_no_session"
 
 	MsgWhoamiTitle     MsgKey = "whoami_title"
 	MsgWhoamiCardTitle MsgKey = "whoami_card_title"
@@ -1943,11 +1943,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Esfuerzo de razonamiento actual: %s",
 	},
 	MsgReasoningChanged: {
-		LangEnglish:            "Reasoning effort switched to `%s`. New sessions will use this setting.",
-		LangChinese:            "推理强度已切换为 `%s`，新会话将使用此设置。",
-		LangTraditionalChinese: "推理強度已切換為 `%s`，新會話將使用此設定。",
-		LangJapanese:           "推論強度を `%s` に切り替えました。新しいセッションで使用されます。",
-		LangSpanish:            "Esfuerzo de razonamiento cambiado a `%s`. Las nuevas sesiones usarán esta configuración.",
+		LangEnglish:            "Reasoning effort switched to `%s`. The current session will keep using this setting.",
+		LangChinese:            "推理强度已切换为 `%s`，当前会话将继续使用此设置。",
+		LangTraditionalChinese: "推理強度已切換為 `%s`，目前會話將繼續使用此設定。",
+		LangJapanese:           "推論強度を `%s` に切り替えました。現在のセッションでこの設定を使い続けます。",
+		LangSpanish:            "Esfuerzo de razonamiento cambiado a `%s`. La sesión actual seguirá usando esta configuración.",
 	},
 	MsgReasoningNotSupported: {
 		LangEnglish:            "This agent does not support reasoning effort switching.",

@@ -5754,8 +5754,8 @@ func helpCardGroups() []helpCardGroup {
 				{command: "/current", action: "nav:/current"},
 				{command: "/switch", action: "nav:/list"},
 				{command: "/search", action: "cmd:/search"},
-				{command: "/history", action: "cmd:/history"},
-				{command: "/delete", action: "cmd:/delete"},
+				{command: "/history", action: "nav:/history"},
+				{command: "/delete", action: "nav:/delete"},
 				{command: "/name", action: "cmd:/name"},
 			},
 		},
@@ -7797,7 +7797,7 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 		return e.renderHeartbeatCard()
 	case "/commands":
 		return e.renderCommandsCard()
-	case "/alias":
+	case "/alias", "/alia":
 		return e.renderAliasCard()
 	case "/config":
 		return e.renderConfigCard()
@@ -7817,6 +7817,9 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 		return e.renderCurrentCard(sessionKey)
 	case "/switch":
 		return e.renderListCardSafe(sessionKey, 1)
+	case "/delete":
+		e.getOrCreateDeleteModeState(sessionKey, nil, nil)
+		return e.renderDeleteModeCard(sessionKey)
 	case "/delete-mode":
 		if strings.HasPrefix(args, "cancel") {
 			return e.renderListCardSafe(sessionKey, 1)

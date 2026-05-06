@@ -2850,6 +2850,23 @@ func TestCmdDelete_NoArgsOnCardPlatformShowsDeleteModeCard(t *testing.T) {
 	}
 }
 
+func TestHandleCardNav_DeleteOpensDeleteModeCard(t *testing.T) {
+	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+	agent := &stubDeleteAgent{stubListAgent: stubListAgent{sessions: []AgentSessionInfo{
+		{ID: "session-1", Summary: "One"},
+		{ID: "session-2", Summary: "Two"},
+	}}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+
+	card := e.handleCardNav("nav:/delete", "feishu:user1")
+	if card == nil {
+		t.Fatal("expected delete mode card")
+	}
+	if got := countCardActionValues(card, "act:/delete-mode toggle "); got != 2 {
+		t.Fatalf("toggle action count = %d, want 2", got)
+	}
+}
+
 func TestDeleteMode_ToggleSelectionReturnsUpdatedCard(t *testing.T) {
 	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
 	agent := &stubDeleteAgent{stubListAgent: stubListAgent{sessions: []AgentSessionInfo{
@@ -6728,6 +6745,20 @@ func TestHandleCardNav_ModelResultBackReturnsModelCard(t *testing.T) {
 	text := card.RenderText()
 	if !strings.Contains(text, "Current model: gpt-5.4") {
 		t.Fatalf("model card text = %q", text)
+	}
+}
+
+func TestHandleCardNav_AliasTypoReturnsAliasCard(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.AddAlias("帮助", "/help")
+
+	card := e.handleCardNav("nav:/alia", "feishu:channel1:user1")
+	if card == nil {
+		t.Fatal("expected alias card")
+	}
+	if text := card.RenderText(); !strings.Contains(text, "`帮助`") || !strings.Contains(text, "`/help`") {
+		t.Fatalf("alias card text = %q", text)
 	}
 }
 

@@ -335,8 +335,6 @@ func newCardActionTestPlatform(t *testing.T) *interactivePlatform {
 func TestInteractivePlatform_HelpCommandActionsDispatchAsMessages(t *testing.T) {
 	actions := []string{
 		"cmd:/search",
-		"cmd:/history",
-		"cmd:/delete",
 		"cmd:/name",
 		"cmd:/memory",
 		"cmd:/allow",
@@ -413,6 +411,8 @@ func TestInteractivePlatform_HelpNavAndActActionsReturnCardUpdates(t *testing.T)
 		"act:/new",
 		"nav:/list",
 		"nav:/current",
+		"nav:/history",
+		"nav:/delete",
 		"nav:/model",
 		"nav:/reasoning",
 		"nav:/mode",
@@ -422,6 +422,7 @@ func TestInteractivePlatform_HelpNavAndActActionsReturnCardUpdates(t *testing.T)
 		"nav:/heartbeat",
 		"nav:/commands",
 		"nav:/alias",
+		"nav:/alia",
 		"nav:/skills",
 		"act:/stop",
 		"nav:/status",

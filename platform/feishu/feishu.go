@@ -652,8 +652,6 @@ func normalizeCardActionForAsyncCommand(action string) string {
 	switch strings.TrimSpace(action) {
 	case "nav:/doctor":
 		return "cmd:/doctor"
-	case "nav:/history":
-		return "cmd:/history"
 	default:
 		return action
 	}
