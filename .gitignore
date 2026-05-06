@@ -1,0 +1,6 @@
+.testcache/
+graphify-out/
+.graphify_detect.json
+new-folder/
+*.exe
+*.log
