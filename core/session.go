@@ -21,6 +21,10 @@ type Session struct {
 	AgentSessionID      string         `json:"agent_session_id"`
 	AgentType           string         `json:"agent_type,omitempty"`
 	PastAgentSessionIDs []string       `json:"past_agent_session_ids,omitempty"`
+	Provider            string         `json:"provider,omitempty"`
+	Model               string         `json:"model,omitempty"`
+	ReasoningEffort     string         `json:"reasoning_effort,omitempty"`
+	ProfileInitialized  bool           `json:"profile_initialized,omitempty"`
 	History             []HistoryEntry `json:"history"`
 	CreatedAt           time.Time      `json:"created_at"`
 	UpdatedAt           time.Time      `json:"updated_at"`
@@ -114,6 +118,46 @@ func (s *Session) GetUpdatedAt() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.UpdatedAt
+}
+
+func (s *Session) SetProfile(provider, model, reasoningEffort string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Provider = provider
+	s.Model = model
+	s.ReasoningEffort = reasoningEffort
+	s.ProfileInitialized = true
+	s.UpdatedAt = time.Now()
+}
+
+func (s *Session) GetProfile() (provider, model, reasoningEffort string, initialized bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Provider, s.Model, s.ReasoningEffort, s.ProfileInitialized
+}
+
+func (s *Session) SetProvider(provider string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Provider = provider
+	s.ProfileInitialized = true
+	s.UpdatedAt = time.Now()
+}
+
+func (s *Session) SetModel(model string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Model = model
+	s.ProfileInitialized = true
+	s.UpdatedAt = time.Now()
+}
+
+func (s *Session) SetReasoningEffort(effort string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ReasoningEffort = effort
+	s.ProfileInitialized = true
+	s.UpdatedAt = time.Now()
 }
 
 // SetAgentSessionID atomically sets the agent session ID and agent type.
@@ -568,6 +612,10 @@ func (sm *SessionManager) saveLocked() {
 			AgentSessionID:      agentSID,
 			AgentType:           s.AgentType,
 			PastAgentSessionIDs: append([]string(nil), s.PastAgentSessionIDs...),
+			Provider:            s.Provider,
+			Model:               s.Model,
+			ReasoningEffort:     s.ReasoningEffort,
+			ProfileInitialized:  s.ProfileInitialized,
 			History:             append([]HistoryEntry(nil), s.History...),
 			CreatedAt:           s.CreatedAt,
 			UpdatedAt:           s.UpdatedAt,

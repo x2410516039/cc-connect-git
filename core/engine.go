@@ -161,6 +161,12 @@ type Engine struct {
 	attachmentSendEnabled bool
 	startedAt             time.Time
 
+	profileDefaultsMu      sync.RWMutex
+	profileDefaultsSet     bool
+	defaultProvider        string
+	defaultModel           string
+	defaultReasoningEffort string
+
 	providerSaveFunc        func(providerName string) error
 	providerAddSaveFunc     func(p ProviderConfig) error
 	providerRemoveSaveFunc  func(name string) error
@@ -397,6 +403,7 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 	}
 
 	if ag != nil {
+		e.setDefaultProfile(captureAgentProfile(ag))
 		e.sessions.InvalidateForAgent(ag.Name())
 	}
 
@@ -2385,6 +2392,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	if agentOverride != nil {
 		agent = agentOverride
 	}
+	e.applySessionProfile(session, sessions, agent)
 
 	ccKey := sessionKey
 	if ccSessionKey != "" {
@@ -4134,6 +4142,7 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 	slog.Info("cmdSwitch: cleanup done", "session_key", msg.SessionKey)
 
 	session := sessions.SwitchToAgentSession(msg.SessionKey, matched.ID, agent.Name(), matched.Summary)
+	e.applySessionProfile(session, sessions, agent)
 	session.ClearHistory()
 
 	shortID := matched.ID
@@ -6027,6 +6036,8 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgModelNotSupported))
 		return
 	}
+	session := sessions.GetOrCreateActive(msg.SessionKey)
+	e.applySessionProfile(session, sessions, agent)
 
 	if len(args) == 0 {
 		if !supportsCards(p) {
@@ -6102,16 +6113,14 @@ func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
 		target = resolveModelSwitchTarget(target, models)
 	}
 
-	target, err = e.switchModelOnAgent(agent, target, agent == e.agent)
+	target, err = e.switchModelOnAgent(agent, target, false)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModelChangeFailed, err))
 		return
 	}
 	e.cleanupInteractiveState(interactiveKey)
 
-	s := sessions.GetOrCreateActive(msg.SessionKey)
-	s.SetAgentSessionID("", "")
-	s.ClearHistory()
+	session.SetModel(target)
 	sessions.Save()
 
 	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModelChanged, target))
@@ -6172,10 +6181,90 @@ func parseModelSwitchArgs(args []string) (string, bool) {
 	return "", false
 }
 
+func captureAgentProfile(agent Agent) (provider, model, reasoningEffort string) {
+	if ps, ok := agent.(ProviderSwitcher); ok {
+		if active := ps.GetActiveProvider(); active != nil {
+			provider = active.Name
+		}
+	}
+	if ms, ok := agent.(ModelSwitcher); ok {
+		model = ms.GetModel()
+	}
+	if rs, ok := agent.(ReasoningEffortSwitcher); ok {
+		reasoningEffort = rs.GetReasoningEffort()
+	}
+	return provider, model, reasoningEffort
+}
+
+func applyProfileToAgent(agent Agent, provider, model, reasoningEffort string) {
+	ps, hasProviderSwitcher := agent.(ProviderSwitcher)
+	if hasProviderSwitcher && provider != "" && model != "" {
+		if updated, found := SetProviderModel(ps.ListProviders(), provider, model); found {
+			ps.SetProviders(updated)
+		}
+	}
+	if ms, ok := agent.(ModelSwitcher); ok {
+		ms.SetModel(model)
+	}
+	if hasProviderSwitcher {
+		ps.SetActiveProvider(provider)
+	}
+	if rs, ok := agent.(ReasoningEffortSwitcher); ok {
+		rs.SetReasoningEffort(reasoningEffort)
+	}
+}
+
+func (e *Engine) setDefaultProfile(provider, model, reasoningEffort string) {
+	e.profileDefaultsMu.Lock()
+	defer e.profileDefaultsMu.Unlock()
+	e.defaultProvider = provider
+	e.defaultModel = model
+	e.defaultReasoningEffort = reasoningEffort
+	e.profileDefaultsSet = true
+}
+
+func (e *Engine) defaultProfile(agent Agent) (provider, model, reasoningEffort string) {
+	e.profileDefaultsMu.RLock()
+	if e.profileDefaultsSet {
+		provider, model, reasoningEffort = e.defaultProvider, e.defaultModel, e.defaultReasoningEffort
+		e.profileDefaultsMu.RUnlock()
+		return provider, model, reasoningEffort
+	}
+	e.profileDefaultsMu.RUnlock()
+	return captureAgentProfile(agent)
+}
+
+func (e *Engine) applySessionProfile(session *Session, sessions *SessionManager, agent Agent) (provider, model, reasoningEffort string) {
+	if session == nil || agent == nil {
+		return "", "", ""
+	}
+	provider, model, reasoningEffort, initialized := session.GetProfile()
+	if !initialized {
+		provider, model, reasoningEffort = e.defaultProfile(agent)
+		session.SetProfile(provider, model, reasoningEffort)
+		if sessions != nil {
+			sessions.Save()
+		}
+	}
+	applyProfileToAgent(agent, provider, model, reasoningEffort)
+	return provider, model, reasoningEffort
+}
+
+func (e *Engine) applySessionProfileForKey(sessionKey string) (Agent, *SessionManager, *Session, string, string, string) {
+	agent, sessions := e.sessionContextForKey(sessionKey)
+	session := sessions.GetOrCreateActive(sessionKey)
+	provider, model, reasoningEffort := e.applySessionProfile(session, sessions, agent)
+	return agent, sessions, session, provider, model, reasoningEffort
+}
+
 // switchModel applies a runtime model selection to the global engine agent and
 // persists the change so reloads keep the selected default.
 func (e *Engine) switchModel(target string) (string, error) {
-	return e.switchModelOnAgent(e.agent, target, true)
+	resolved, err := e.switchModelOnAgent(e.agent, target, true)
+	if err == nil {
+		e.setDefaultProfile(captureAgentProfile(e.agent))
+	}
+	return resolved, err
 }
 
 // switchModelOnAgent applies a runtime model selection to the provided agent.
@@ -6189,7 +6278,7 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 
 	providerSwitcher, ok := agent.(ProviderSwitcher)
 	if !ok {
-		if e.modelSaveFunc != nil {
+		if persistConfig && e.modelSaveFunc != nil {
 			if err := e.modelSaveFunc(target); err != nil {
 				return "", fmt.Errorf("save model: %w", err)
 			}
@@ -6199,7 +6288,7 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 	}
 	active := providerSwitcher.GetActiveProvider()
 	if active == nil {
-		if e.modelSaveFunc != nil {
+		if persistConfig && e.modelSaveFunc != nil {
 			if err := e.modelSaveFunc(target); err != nil {
 				return "", fmt.Errorf("save model: %w", err)
 			}
@@ -6211,10 +6300,6 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 	providers := providerSwitcher.ListProviders()
 	updated, found := SetProviderModel(providers, active.Name, target)
 	if !found {
-		switcher.SetModel(target)
-		return target, nil
-	}
-	if !persistConfig {
 		switcher.SetModel(target)
 		return target, nil
 	}
@@ -6230,7 +6315,7 @@ func (e *Engine) switchModelOnAgent(agent Agent, target string, persistConfig bo
 }
 
 func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
-	agent, _, interactiveKey, err := e.commandContext(p, msg)
+	agent, sessions, interactiveKey, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
@@ -6241,6 +6326,8 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReasoningNotSupported))
 		return
 	}
+	session := sessions.GetOrCreateActive(msg.SessionKey)
+	e.applySessionProfile(session, sessions, agent)
 
 	if len(args) == 0 {
 		if !supportsCards(p) {
@@ -6307,6 +6394,8 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 
 	switcher.SetReasoningEffort(target)
 	e.cleanupInteractiveState(interactiveKey)
+	session.SetReasoningEffort(target)
+	sessions.Save()
 
 	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReasoningChanged, target))
 }
@@ -6735,15 +6824,22 @@ func (e *Engine) cmdAllow(p Platform, msg *Message, args []string) {
 }
 
 func (e *Engine) cmdProvider(p Platform, msg *Message, args []string) {
-	switcher, ok := e.agent.(ProviderSwitcher)
+	agent, sessions, _, err := e.commandContext(p, msg)
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
+		return
+	}
+	switcher, ok := agent.(ProviderSwitcher)
 	if !ok {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgProviderNotSupported))
 		return
 	}
+	session := sessions.GetOrCreateActive(msg.SessionKey)
+	e.applySessionProfile(session, sessions, agent)
 
 	if len(args) == 0 {
 		if supportsCards(p) {
-			e.replyWithCard(p, msg.ReplyCtx, e.renderProviderCard())
+			e.replyWithCard(p, msg.ReplyCtx, e.renderProviderCard(msg.SessionKey))
 			return
 		}
 
@@ -6820,7 +6916,7 @@ func (e *Engine) cmdProvider(p Platform, msg *Message, args []string) {
 			e.reply(p, msg.ReplyCtx, "Usage: /provider switch <name>")
 			return
 		}
-		e.switchProvider(p, msg, switcher, args[1])
+		e.switchProvider(p, msg, sessions, agent, switcher, args[1])
 
 	case "current":
 		current := switcher.GetActiveProvider()
@@ -6833,21 +6929,15 @@ func (e *Engine) cmdProvider(p Platform, msg *Message, args []string) {
 	case "clear", "reset", "none":
 		switcher.SetActiveProvider("")
 		e.cleanupInteractiveState(e.interactiveKeyForSessionKey(msg.SessionKey))
-		{
-			s := e.sessions.GetOrCreateActive(msg.SessionKey)
-			s.SetAgentSessionID("", "")
-			s.ClearHistory()
-			e.sessions.Save()
+		session.SetProvider("")
+		if ms, ok := agent.(ModelSwitcher); ok {
+			session.SetModel(ms.GetModel())
 		}
-		if e.providerSaveFunc != nil {
-			if err := e.providerSaveFunc(""); err != nil {
-				slog.Error("failed to save provider", "error", err)
-			}
-		}
+		sessions.Save()
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgProviderCleared))
 
 	default:
-		e.switchProvider(p, msg, switcher, args[0])
+		e.switchProvider(p, msg, sessions, agent, switcher, args[0])
 	}
 }
 
@@ -6989,23 +7079,20 @@ func (e *Engine) resetAllSessions() {
 	e.sessions.Save()
 }
 
-func (e *Engine) switchProvider(p Platform, msg *Message, switcher ProviderSwitcher, name string) {
+func (e *Engine) switchProvider(p Platform, msg *Message, sessions *SessionManager, agent Agent, switcher ProviderSwitcher, name string) {
+	s := sessions.GetOrCreateActive(msg.SessionKey)
+	e.applySessionProfile(s, sessions, agent)
 	if !switcher.SetActiveProvider(name) {
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgProviderNotFound), name))
 		return
 	}
 	e.cleanupInteractiveState(e.interactiveKeyForSessionKey(msg.SessionKey))
 
-	s := e.sessions.GetOrCreateActive(msg.SessionKey)
-	s.SetAgentSessionID("", "")
-	s.ClearHistory()
-	e.sessions.Save()
-
-	if e.providerSaveFunc != nil {
-		if err := e.providerSaveFunc(name); err != nil {
-			slog.Error("failed to save provider", "error", err)
-		}
+	s.SetProvider(name)
+	if ms, ok := agent.(ModelSwitcher); ok {
+		s.SetModel(ms.GetModel())
 	}
+	sessions.Save()
 
 	e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgProviderSwitched), name))
 }
@@ -7788,7 +7875,7 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	case "/history":
 		return e.renderHistoryCard(sessionKey)
 	case "/provider":
-		return e.renderProviderCard()
+		return e.renderProviderCard(sessionKey)
 	case "/provider/add", "/provider/add-other", "/provider/add-cancel":
 		return e.renderProviderAddCard(sessionKey)
 	case "/cron":
@@ -7834,7 +7921,7 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 }
 
 func (e *Engine) handleModelCardAction(args, sessionKey string) *Card {
-	agent, sessions := e.sessionContextForKey(sessionKey)
+	agent, sessions, session, _, _, _ := e.applySessionProfileForKey(sessionKey)
 	switcher, ok := agent.(ModelSwitcher)
 	if !ok {
 		return e.simpleCard(e.i18n.T(MsgCardTitleModel), "indigo", e.i18n.T(MsgModelNotSupported))
@@ -7852,12 +7939,10 @@ func (e *Engine) handleModelCardAction(args, sessionKey string) *Card {
 		cancel()
 	}
 
-	resolved, err := e.switchModelOnAgent(agent, target, agent == e.agent)
+	resolved, err := e.switchModelOnAgent(agent, target, false)
 	e.cleanupInteractiveState(e.interactiveKeyForSessionKey(sessionKey))
 	if err == nil {
-		s := sessions.GetOrCreateActive(sessionKey)
-		s.SetAgentSessionID("", "")
-		s.ClearHistory()
+		session.SetModel(resolved)
 		sessions.Save()
 	}
 
@@ -7872,7 +7957,7 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if args == "" {
 			return
 		}
-		agent, sessions := e.sessionContextForKey(sessionKey)
+		agent, sessions, _, _, _, _ := e.applySessionProfileForKey(sessionKey)
 		switcher, ok := agent.(ModelSwitcher)
 		if !ok {
 			return
@@ -7907,7 +7992,7 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if args == "" {
 			return
 		}
-		agent, _ := e.sessionContextForKey(sessionKey)
+		agent, sessions, s, _, _, _ := e.applySessionProfileForKey(sessionKey)
 		switcher, ok := agent.(ReasoningEffortSwitcher)
 		if !ok {
 			return
@@ -7922,6 +8007,8 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 				switcher.SetReasoningEffort(target)
 				interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
 				e.cleanupInteractiveState(interactiveKey)
+				s.SetReasoningEffort(target)
+				sessions.Save()
 				return
 			}
 		}
@@ -7976,7 +8063,8 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if args == "" {
 			return
 		}
-		switcher, ok := e.agent.(ProviderSwitcher)
+		agent, sessions, s, _, _, _ := e.applySessionProfileForKey(sessionKey)
+		switcher, ok := agent.(ProviderSwitcher)
 		if !ok {
 			return
 		}
@@ -7987,13 +8075,11 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if switcher.SetActiveProvider(provName) {
 			interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
 			e.cleanupInteractiveState(interactiveKey)
-			s := e.sessions.GetOrCreateActive(sessionKey)
-			s.SetAgentSessionID("", "")
-			s.ClearHistory()
-			e.sessions.Save()
-			if e.providerSaveFunc != nil {
-				_ = e.providerSaveFunc(provName)
+			s.SetProvider(provName)
+			if ms, ok := agent.(ModelSwitcher); ok {
+				s.SetModel(ms.GetModel())
 			}
+			sessions.Save()
 		}
 
 	case "/provider/add":
@@ -8065,6 +8151,7 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
 		e.cleanupInteractiveState(interactiveKey)
 		session := sessions.SwitchToAgentSession(sessionKey, matched.ID, agent.Name(), matched.Summary)
+		e.applySessionProfile(session, sessions, agent)
 		session.ClearHistory()
 
 	case "/dir":
@@ -8408,11 +8495,11 @@ func (e *Engine) pushDeleteModeResultCard(sessionKey string) {
 }
 
 func (e *Engine) performModelSwitchAsync(sessionKey string, state *interactiveState, agent Agent, sessions *SessionManager, target string) {
-	resolved, err := e.switchModelOnAgent(agent, target, agent == e.agent)
+	s := sessions.GetOrCreateActive(sessionKey)
+	e.applySessionProfile(s, sessions, agent)
+	resolved, err := e.switchModelOnAgent(agent, target, false)
 	if err == nil {
-		s := sessions.GetOrCreateActive(sessionKey)
-		s.SetAgentSessionID("", "")
-		s.ClearHistory()
+		s.SetModel(resolved)
 		sessions.Save()
 	}
 
@@ -8641,7 +8728,7 @@ func (e *Engine) renderModelCard(sessionKey string) *Card {
 
 	agent := e.agent
 	if sessionKey != "" {
-		agent, _ = e.sessionContextForKey(sessionKey)
+		agent, _, _, _, _, _ = e.applySessionProfileForKey(sessionKey)
 	}
 
 	switcher, ok := agent.(ModelSwitcher)
@@ -8710,7 +8797,7 @@ func (e *Engine) renderModelSwitchResultCard(target string, err error) *Card {
 func (e *Engine) renderReasoningCard(sessionKey string) *Card {
 	agent := e.agent
 	if sessionKey != "" {
-		agent, _ = e.sessionContextForKey(sessionKey)
+		agent, _, _, _, _, _ = e.applySessionProfileForKey(sessionKey)
 	}
 
 	switcher, ok := agent.(ReasoningEffortSwitcher)
@@ -9018,8 +9105,12 @@ func (e *Engine) renderHistoryCard(sessionKey string) *Card {
 		Build()
 }
 
-func (e *Engine) renderProviderCard() *Card {
-	switcher, ok := e.agent.(ProviderSwitcher)
+func (e *Engine) renderProviderCard(sessionKey string) *Card {
+	agent := e.agent
+	if sessionKey != "" {
+		agent, _, _, _, _, _ = e.applySessionProfileForKey(sessionKey)
+	}
+	switcher, ok := agent.(ProviderSwitcher)
 	if !ok {
 		return e.simpleCard(e.i18n.T(MsgCardTitleProvider), "indigo", e.i18n.T(MsgProviderNotSupported))
 	}

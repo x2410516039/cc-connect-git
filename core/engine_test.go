@@ -323,6 +323,17 @@ func (p *stubCardPlatform) getRefreshedCards() []*Card {
 	return dst
 }
 
+func firstCardSelect(t *testing.T, card *Card) CardSelect {
+	t.Helper()
+	for _, elem := range card.Elements {
+		if sel, ok := elem.(CardSelect); ok {
+			return sel
+		}
+	}
+	t.Fatalf("card has no select: %q", card.RenderText())
+	return CardSelect{}
+}
+
 type stubCompactProgressPlatform struct {
 	stubPlatformEngine
 	style          string
@@ -491,6 +502,36 @@ func (a *namedStubModelModeAgent) Name() string {
 		return "named-stub-model"
 	}
 	return a.name
+}
+
+type profileSwitchableAgent struct {
+	namedStubModelModeAgent
+	sessions []AgentSessionInfo
+}
+
+func (a *profileSwitchableAgent) ListSessions(_ context.Context) ([]AgentSessionInfo, error) {
+	return a.sessions, nil
+}
+
+type providerModelSyncAgent struct {
+	stubModelModeAgent
+}
+
+func (a *providerModelSyncAgent) SetActiveProvider(name string) bool {
+	if name == "" {
+		a.active = ""
+		return true
+	}
+	for _, prov := range a.providers {
+		if prov.Name == name {
+			a.active = name
+			if prov.Model != "" {
+				a.model = prov.Model
+			}
+			return true
+		}
+	}
+	return false
 }
 
 type namedStubWorkspaceOptionAgent struct {
@@ -3224,6 +3265,273 @@ func TestCmdProvider_UsesLegacyTextOnPlatformWithoutCardSupport(t *testing.T) {
 	}
 }
 
+func TestCmdProvider_SwitchKeepsSessionIDAndDoesNotSaveGlobalDefault(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &providerModelSyncAgent{
+		stubModelModeAgent: stubModelModeAgent{
+			model: "gpt-4.1-mini",
+			providers: []ProviderConfig{
+				{Name: "openai", Model: "gpt-4.1-mini"},
+				{Name: "azure", Model: "gpt-4.1"},
+			},
+			active: "openai",
+		},
+	}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	var providerSaves int
+	e.SetProviderSaveFunc(func(string) error {
+		providerSaves++
+		return nil
+	})
+	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+	session := e.sessions.GetOrCreateActive(msg.SessionKey)
+	session.SetAgentSessionID("existing-session", "test")
+
+	e.cmdProvider(p, msg, []string{"switch", "azure"})
+
+	if got := agent.GetActiveProvider(); got == nil || got.Name != "azure" {
+		t.Fatalf("active provider = %#v, want azure", got)
+	}
+	if got := session.GetAgentSessionID(); got != "existing-session" {
+		t.Fatalf("AgentSessionID = %q, want existing-session", got)
+	}
+	provider, model, _, initialized := session.GetProfile()
+	if !initialized || provider != "azure" || model != "gpt-4.1" {
+		t.Fatalf("session profile = %q/%q initialized=%v, want azure/gpt-4.1 true", provider, model, initialized)
+	}
+	if providerSaves != 0 {
+		t.Fatalf("global provider save calls = %d, want 0", providerSaves)
+	}
+}
+
+func TestHandleCardNav_ProviderSwitchPersistsProviderAndCurrentModel(t *testing.T) {
+	agent := &providerModelSyncAgent{
+		stubModelModeAgent: stubModelModeAgent{
+			model: "gpt-4.1-mini",
+			providers: []ProviderConfig{
+				{Name: "openai", Model: "gpt-4.1-mini"},
+				{Name: "azure", Model: "gpt-4.1"},
+			},
+			active: "openai",
+		},
+	}
+	e := NewEngine("test", agent, []Platform{&stubPlatformEngine{n: "plain"}}, "", LangEnglish)
+	key := "test:user1"
+	session := e.sessions.GetOrCreateActive(key)
+	session.SetAgentSessionID("existing-session", "test")
+
+	card := e.handleCardNav("act:/provider azure", key)
+	if card == nil {
+		t.Fatal("expected provider card after card action")
+	}
+	if got := agent.GetActiveProvider(); got == nil || got.Name != "azure" || got.Model != "gpt-4.1" {
+		t.Fatalf("active provider = %#v, want azure with gpt-4.1", got)
+	}
+	if got := agent.GetModel(); got != "gpt-4.1" {
+		t.Fatalf("agent model = %q, want provider default gpt-4.1", got)
+	}
+	provider, model, _, initialized := session.GetProfile()
+	if !initialized || provider != "azure" || model != "gpt-4.1" {
+		t.Fatalf("session profile = %q/%q initialized=%v, want azure/gpt-4.1 true", provider, model, initialized)
+	}
+	if got := session.GetAgentSessionID(); got != "existing-session" {
+		t.Fatalf("AgentSessionID = %q, want existing-session", got)
+	}
+	if got := firstCardSelect(t, card).InitValue; got != "act:/provider azure" {
+		t.Fatalf("provider card init = %q, want azure", got)
+	}
+}
+
+func TestSessionProfile_RestoresPerSessionProviderModelReasoning(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &stubModelModeAgent{
+		model:           "gpt-4.1-mini",
+		reasoningEffort: "medium",
+		providers: []ProviderConfig{
+			{Name: "openai", Model: "gpt-4.1-mini"},
+			{Name: "azure", Model: "gpt-4.1"},
+		},
+		active: "openai",
+	}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	key := "test:user1"
+
+	first := e.sessions.NewSession(key, "first")
+	first.SetProfile("openai", "gpt-4.1-mini", "low")
+	second := e.sessions.NewSession(key, "second")
+	second.SetProfile("azure", "gpt-4.1", "high")
+
+	e.applySessionProfile(first, e.sessions, agent)
+	if got := agent.GetActiveProvider(); got == nil || got.Name != "openai" {
+		t.Fatalf("first active provider = %#v, want openai", got)
+	}
+	if got := agent.GetActiveProvider(); got == nil || got.Model != "gpt-4.1-mini" {
+		t.Fatalf("first active provider model = %#v, want gpt-4.1-mini", got)
+	}
+	if got := agent.GetModel(); got != "gpt-4.1-mini" {
+		t.Fatalf("first model = %q, want gpt-4.1-mini", got)
+	}
+	if got := agent.GetReasoningEffort(); got != "low" {
+		t.Fatalf("first reasoning effort = %q, want low", got)
+	}
+
+	e.applySessionProfile(second, e.sessions, agent)
+	if got := agent.GetActiveProvider(); got == nil || got.Name != "azure" {
+		t.Fatalf("second active provider = %#v, want azure", got)
+	}
+	if got := agent.GetActiveProvider(); got == nil || got.Model != "gpt-4.1" {
+		t.Fatalf("second active provider model = %#v, want gpt-4.1", got)
+	}
+	if got := agent.GetModel(); got != "gpt-4.1" {
+		t.Fatalf("second model = %q, want gpt-4.1", got)
+	}
+	if got := agent.GetReasoningEffort(); got != "high" {
+		t.Fatalf("second reasoning effort = %q, want high", got)
+	}
+}
+
+func TestSessionProfile_LegacySessionFallsBackToDefaultAndPersists(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "sessions.json")
+	agent := &stubModelModeAgent{
+		model:           "gpt-4.1-mini",
+		reasoningEffort: "medium",
+		providers: []ProviderConfig{
+			{Name: "openai", Model: "gpt-4.1-mini"},
+			{Name: "azure", Model: "gpt-4.1"},
+		},
+		active: "openai",
+	}
+	e := NewEngine("test", agent, []Platform{&stubPlatformEngine{n: "plain"}}, storePath, LangEnglish)
+	key := "test:user1"
+	session := e.sessions.GetOrCreateActive(key)
+
+	e.applySessionProfile(session, e.sessions, agent)
+
+	provider, model, effort, initialized := session.GetProfile()
+	if !initialized {
+		t.Fatal("expected legacy session profile to be initialized")
+	}
+	if provider != "openai" || model != "gpt-4.1-mini" || effort != "medium" {
+		t.Fatalf("profile = %q/%q/%q, want openai/gpt-4.1-mini/medium", provider, model, effort)
+	}
+
+	reloaded := NewSessionManager(storePath)
+	sessions := reloaded.ListSessions(key)
+	if len(sessions) != 1 {
+		t.Fatalf("reloaded sessions = %d, want 1", len(sessions))
+	}
+	provider, model, effort, initialized = sessions[0].GetProfile()
+	if !initialized || provider != "openai" || model != "gpt-4.1-mini" || effort != "medium" {
+		t.Fatalf("reloaded profile = %q/%q/%q initialized=%v, want openai/gpt-4.1-mini/medium true", provider, model, effort, initialized)
+	}
+}
+
+func TestCmdSwitch_AppliesSessionProfileWithoutSavingGlobalDefaults(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &profileSwitchableAgent{
+		namedStubModelModeAgent: namedStubModelModeAgent{
+			name: "profile-agent",
+			stubModelModeAgent: stubModelModeAgent{
+				model:           "gpt-4.1-mini",
+				reasoningEffort: "medium",
+				providers: []ProviderConfig{
+					{Name: "openai", Model: "gpt-4.1-mini"},
+					{Name: "azure", Model: "gpt-4.1"},
+				},
+				active: "openai",
+			},
+		},
+		sessions: []AgentSessionInfo{
+			{ID: "thread-openai", Summary: "OpenAI thread", MessageCount: 2},
+			{ID: "thread-azure", Summary: "Azure thread", MessageCount: 3},
+		},
+	}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	var providerSaves, providerModelSaves, modelSaves int
+	e.SetProviderSaveFunc(func(string) error {
+		providerSaves++
+		return nil
+	})
+	e.SetProviderModelSaveFunc(func(string, string) error {
+		providerModelSaves++
+		return nil
+	})
+	e.SetModelSaveFunc(func(string) error {
+		modelSaves++
+		return nil
+	})
+
+	key := "test:user1"
+	first := e.sessions.NewSession(key, "openai")
+	first.SetAgentSessionID("thread-openai", "profile-agent")
+	first.SetProfile("openai", "gpt-4.1-mini", "low")
+	second := e.sessions.NewSession(key, "azure")
+	second.SetAgentSessionID("thread-azure", "profile-agent")
+	second.SetProfile("azure", "gpt-4.1", "high")
+	e.sessions.SwitchSession(key, first.ID)
+
+	e.cmdSwitch(p, &Message{SessionKey: key, ReplyCtx: "ctx"}, []string{"2"})
+
+	if got := e.sessions.GetOrCreateActive(key).GetAgentSessionID(); got != "thread-azure" {
+		t.Fatalf("active agent session id = %q, want thread-azure", got)
+	}
+	if got := agent.GetActiveProvider(); got == nil || got.Name != "azure" {
+		t.Fatalf("active provider = %#v, want azure", got)
+	}
+	if got := agent.GetModel(); got != "gpt-4.1" {
+		t.Fatalf("model = %q, want gpt-4.1", got)
+	}
+	if got := agent.GetReasoningEffort(); got != "high" {
+		t.Fatalf("reasoning effort = %q, want high", got)
+	}
+	if providerSaves != 0 || providerModelSaves != 0 || modelSaves != 0 {
+		t.Fatalf("global save calls provider/model-provider/model = %d/%d/%d, want 0/0/0", providerSaves, providerModelSaves, modelSaves)
+	}
+}
+
+func TestProfileCardsFollowActiveSessionProfile(t *testing.T) {
+	agent := &stubModelModeAgent{
+		model:           "gpt-4.1-mini",
+		reasoningEffort: "medium",
+		providers: []ProviderConfig{
+			{Name: "openai", Model: "gpt-4.1-mini"},
+			{Name: "azure", Model: "gpt-4.1"},
+		},
+		active: "openai",
+	}
+	e := NewEngine("test", agent, []Platform{&stubPlatformEngine{n: "plain"}}, "", LangEnglish)
+	key := "test:user1"
+
+	first := e.sessions.NewSession(key, "first")
+	first.SetProfile("openai", "gpt-4.1-mini", "low")
+	second := e.sessions.NewSession(key, "second")
+	second.SetProfile("azure", "gpt-4.1", "high")
+
+	if got := firstCardSelect(t, e.renderProviderCard(key)).InitValue; got != "act:/provider azure" {
+		t.Fatalf("active provider card init = %q, want azure", got)
+	}
+	if got := firstCardSelect(t, e.renderModelCard(key)).InitValue; got != "act:/model switch 1" {
+		t.Fatalf("active model card init = %q, want gpt-4.1", got)
+	}
+	if got := firstCardSelect(t, e.renderReasoningCard(key)).InitValue; got != "act:/reasoning 3" {
+		t.Fatalf("active reasoning card init = %q, want high", got)
+	}
+
+	if _, err := e.sessions.SwitchSession(key, first.ID); err != nil {
+		t.Fatalf("SwitchSession: %v", err)
+	}
+
+	if got := firstCardSelect(t, e.renderProviderCard(key)).InitValue; got != "act:/provider openai" {
+		t.Fatalf("switched provider card init = %q, want openai", got)
+	}
+	if got := firstCardSelect(t, e.renderModelCard(key)).InitValue; got != "act:/model switch 2" {
+		t.Fatalf("switched model card init = %q, want gpt-4.1-mini", got)
+	}
+	if got := firstCardSelect(t, e.renderReasoningCard(key)).InitValue; got != "act:/reasoning 1" {
+		t.Fatalf("switched reasoning card init = %q, want low", got)
+	}
+}
+
 func TestCmdModel_UsesInlineButtonsOnButtonOnlyPlatform(t *testing.T) {
 	p := &stubInlineButtonPlatform{stubPlatformEngine: stubPlatformEngine{n: "inline-only"}}
 	agent := &stubModelModeAgent{}
@@ -3239,7 +3547,7 @@ func TestCmdModel_UsesInlineButtonsOnButtonOnlyPlatform(t *testing.T) {
 	}
 }
 
-func TestCmdModel_UpdatesActiveProviderModel(t *testing.T) {
+func TestCmdModel_UpdatesSessionModelWithoutSavingGlobalProviderModel(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
 	agent := &stubModelModeAgent{
 		model: "gpt-4.1-mini",
@@ -3253,10 +3561,13 @@ func TestCmdModel_UpdatesActiveProviderModel(t *testing.T) {
 		active: "openai",
 	}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
-	var savedProvider, savedModel string
+	var providerModelSaves, modelSaves int
 	e.SetProviderModelSaveFunc(func(providerName, model string) error {
-		savedProvider = providerName
-		savedModel = model
+		providerModelSaves++
+		return nil
+	})
+	e.SetModelSaveFunc(func(model string) error {
+		modelSaves++
 		return nil
 	})
 	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
@@ -3275,11 +3586,16 @@ func TestCmdModel_UpdatesActiveProviderModel(t *testing.T) {
 	if got := agent.GetModel(); got != "gpt-4.1" {
 		t.Fatalf("GetModel() = %q, want gpt-4.1", got)
 	}
-	if savedProvider != "openai" || savedModel != "gpt-4.1" {
-		t.Fatalf("saved provider/model = %q/%q, want openai/gpt-4.1", savedProvider, savedModel)
+	if providerModelSaves != 0 || modelSaves != 0 {
+		t.Fatalf("global save calls provider-model/model = %d/%d, want 0/0", providerModelSaves, modelSaves)
 	}
-	if active := e.sessions.GetOrCreateActive(msg.SessionKey); active.AgentSessionID != "" {
-		t.Fatalf("session id = %q, want cleared after model switch", active.AgentSessionID)
+	active := e.sessions.GetOrCreateActive(msg.SessionKey)
+	if active.AgentSessionID != "existing-session" {
+		t.Fatalf("session id = %q, want existing-session", active.AgentSessionID)
+	}
+	_, model, _, initialized := active.GetProfile()
+	if !initialized || model != "gpt-4.1" {
+		t.Fatalf("session profile model = %q initialized=%v, want gpt-4.1 true", model, initialized)
 	}
 }
 
@@ -3341,7 +3657,7 @@ func TestCmdModel_LegacySyntaxStillWorks(t *testing.T) {
 	}
 }
 
-func TestCmdModel_SavesModelWhenNoActiveProvider(t *testing.T) {
+func TestCmdModel_DoesNotSaveGlobalModelWhenNoActiveProvider(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
 	agent := &stubModelModeAgent{
 		model: "gpt-4.1-mini",
@@ -3355,9 +3671,9 @@ func TestCmdModel_SavesModelWhenNoActiveProvider(t *testing.T) {
 	}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
 
-	var savedModel string
+	var modelSaves int
 	e.SetModelSaveFunc(func(model string) error {
-		savedModel = model
+		modelSaves++
 		return nil
 	})
 
@@ -3367,12 +3683,12 @@ func TestCmdModel_SavesModelWhenNoActiveProvider(t *testing.T) {
 	if agent.model != "gpt-4.1" {
 		t.Fatalf("agent model = %q, want gpt-4.1", agent.model)
 	}
-	if savedModel != "gpt-4.1" {
-		t.Fatalf("saved model = %q, want gpt-4.1", savedModel)
+	if modelSaves != 0 {
+		t.Fatalf("global model save calls = %d, want 0", modelSaves)
 	}
 }
 
-func TestCmdModel_DoesNotClaimSuccessWhenModelSaveFails(t *testing.T) {
+func TestCmdModel_IgnoresGlobalModelSaveFuncAndKeepsSessionID(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
 	agent := &stubModelModeAgent{
 		model: "gpt-4.1-mini",
@@ -3385,7 +3701,9 @@ func TestCmdModel_DoesNotClaimSuccessWhenModelSaveFails(t *testing.T) {
 		},
 	}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	var modelSaves int
 	e.SetModelSaveFunc(func(model string) error {
+		modelSaves++
 		return errors.New("disk full")
 	})
 
@@ -3396,21 +3714,24 @@ func TestCmdModel_DoesNotClaimSuccessWhenModelSaveFails(t *testing.T) {
 
 	e.cmdModel(p, msg, []string{"switch", "gpt"})
 
-	if agent.model != "gpt-4.1-mini" {
-		t.Fatalf("agent model = %q, want unchanged gpt-4.1-mini", agent.model)
+	if agent.model != "gpt-4.1" {
+		t.Fatalf("agent model = %q, want gpt-4.1", agent.model)
 	}
 	if active := e.sessions.GetOrCreateActive(msg.SessionKey); active.AgentSessionID != "existing-session" {
-		t.Fatalf("session id = %q, want existing-session after failure", active.AgentSessionID)
+		t.Fatalf("session id = %q, want existing-session", active.AgentSessionID)
 	}
 	if active := e.sessions.GetOrCreateActive(msg.SessionKey); len(active.History) != 1 {
-		t.Fatalf("history length = %d, want 1 after failure", len(active.History))
+		t.Fatalf("history length = %d, want 1", len(active.History))
+	}
+	if modelSaves != 0 {
+		t.Fatalf("global model save calls = %d, want 0", modelSaves)
 	}
 	sent := p.getSent()
 	if len(sent) != 1 {
 		t.Fatalf("sent messages = %d, want 1", len(sent))
 	}
-	if !strings.Contains(sent[0], "Failed to change model") {
-		t.Fatalf("reply = %q, want model change failure message", sent[0])
+	if !strings.Contains(sent[0], "Model switched to `gpt-4.1`") {
+		t.Fatalf("reply = %q, want model changed message", sent[0])
 	}
 }
 
@@ -3447,15 +3768,15 @@ func TestCmdModel_MultiWorkspaceUsesWorkspaceAgentAndSessions(t *testing.T) {
 	if globalAgent.model != "gpt-4.1-mini" {
 		t.Fatalf("global agent model = %q, want unchanged", globalAgent.model)
 	}
-	if got := ws.sessions.GetOrCreateActive(msg.SessionKey).AgentSessionID; got != "" {
-		t.Fatalf("workspace session id = %q, want cleared", got)
+	if got := ws.sessions.GetOrCreateActive(msg.SessionKey).AgentSessionID; got != "workspace-session" {
+		t.Fatalf("workspace session id = %q, want workspace-session", got)
 	}
 	if got := e.sessions.GetOrCreateActive(msg.SessionKey).AgentSessionID; got != "global-session" {
 		t.Fatalf("global session id = %q, want untouched", got)
 	}
 }
 
-func TestCmdModel_MultiWorkspaceSwitchDoesNotMutateProviderModel(t *testing.T) {
+func TestCmdModel_MultiWorkspaceSwitchUpdatesRuntimeProviderModel(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
 	globalAgent := &stubModelModeAgent{model: "gpt-4.1-mini"}
 	e := NewEngine("test", globalAgent, []Platform{p}, "", LangEnglish)
@@ -3482,14 +3803,15 @@ func TestCmdModel_MultiWorkspaceSwitchDoesNotMutateProviderModel(t *testing.T) {
 	ws.sessions = NewSessionManager("")
 
 	msg := &Message{SessionKey: "feishu:" + channelID + ":u1", ReplyCtx: "ctx"}
+	ws.sessions.GetOrCreateActive(msg.SessionKey).SetProfile("openai", "gpt-4.1-mini", "")
 
 	e.cmdModel(p, msg, []string{"switch", "gpt"})
 
 	if wsAgent.model != "gpt-4.1" {
 		t.Fatalf("workspace agent model = %q, want gpt-4.1", wsAgent.model)
 	}
-	if got := wsAgent.GetActiveProvider(); got == nil || got.Model != "gpt-4.1-mini" {
-		t.Fatalf("workspace active provider = %#v, want unchanged model gpt-4.1-mini", got)
+	if got := wsAgent.GetActiveProvider(); got == nil || got.Model != "gpt-4.1" {
+		t.Fatalf("workspace active provider = %#v, want gpt-4.1", got)
 	}
 }
 
@@ -6693,8 +7015,8 @@ func TestHandleCardNav_ModelUsesWorkspaceContext(t *testing.T) {
 	if globalAgent.model != "global-old" {
 		t.Fatalf("global agent model = %q, want unchanged", globalAgent.model)
 	}
-	if got := ws.sessions.GetOrCreateActive(sessionKey).AgentSessionID; got != "" {
-		t.Fatalf("workspace session id = %q, want cleared", got)
+	if got := ws.sessions.GetOrCreateActive(sessionKey).AgentSessionID; got != "workspace-session" {
+		t.Fatalf("workspace session id = %q, want workspace-session", got)
 	}
 	if got := e.sessions.GetOrCreateActive(sessionKey).AgentSessionID; got != "global-session" {
 		t.Fatalf("global session id = %q, want untouched", got)
@@ -6704,19 +7026,29 @@ func TestHandleCardNav_ModelUsesWorkspaceContext(t *testing.T) {
 	}
 }
 
-func TestHandleCardNav_ModelSwitchFailureRefreshesCard(t *testing.T) {
+func TestHandleCardNav_ModelSwitchDoesNotCallGlobalModelSave(t *testing.T) {
 	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
 	agent := &stubModelModeAgent{model: "old"}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
-	e.modelSaveFunc = func(string) error { return errors.New("save failed") }
+	var modelSaves int
+	e.modelSaveFunc = func(string) error {
+		modelSaves++
+		return errors.New("save failed")
+	}
 
 	sessionKey := "feishu:channel1:user1"
 	card := e.handleCardNav("act:/model broken-model", sessionKey)
 	if card == nil {
-		t.Fatal("expected immediate failure card")
+		t.Fatal("expected immediate result card")
 	}
-	if text := card.RenderText(); !strings.Contains(text, "Failed to switch model: save model: save failed") {
-		t.Fatalf("failure card = %q", text)
+	if text := card.RenderText(); !strings.Contains(text, "Model switched to `broken-model`.") {
+		t.Fatalf("result card = %q", text)
+	}
+	if agent.model != "broken-model" {
+		t.Fatalf("model = %q, want broken-model", agent.model)
+	}
+	if modelSaves != 0 {
+		t.Fatalf("global model save calls = %d, want 0", modelSaves)
 	}
 	if refreshed := p.getRefreshedCards(); len(refreshed) != 0 {
 		t.Fatalf("unexpected async refreshed cards: %d", len(refreshed))
@@ -6779,6 +7111,7 @@ func TestHandleCardNav_ModelCardUsesWorkspaceAgent(t *testing.T) {
 	ws := e.workspacePool.GetOrCreate(wsDir)
 	ws.agent = &stubModelModeAgent{model: "workspace-model"}
 	ws.sessions = NewSessionManager("")
+	ws.sessions.GetOrCreateActive(sessionKey).SetProfile("", "workspace-model", "")
 
 	card := e.handleCardNav("nav:/model", sessionKey)
 	if card == nil {

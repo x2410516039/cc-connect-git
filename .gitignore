@@ -1,6 +1,14 @@
-.testcache/
-graphify-out/
-.graphify_detect.json
-new-folder/
-*.exe
-*.log
+# Ignore everything at the project root by default.
+/*
+
+# Keep this ignore file.
+!/.gitignore
+
+# Keep selected project folders.
+!/agent/
+!/cmd/
+!/config/
+!/core/
+!/daemon/
+!/platform/
+!/tests/
