@@ -1,14 +1,10 @@
-# Ignore everything at the project root by default.
-/*
-
-# Keep this ignore file.
-!/.gitignore
-
-# Keep selected project folders.
-!/agent/
-!/cmd/
-!/config/
-!/core/
-!/daemon/
-!/platform/
-!/tests/
+﻿.testcache/
+.gocache/
+graphify-out/
+new-folder/
+AGENTS.md
+CC_CONNECT_DEVELOPMENT.md
+config.toml
+.graphify_detect.json
+*.exe
+*.log
