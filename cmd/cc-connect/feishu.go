@@ -96,6 +96,12 @@ func runFeishu(args []string) {
 		runFeishuSetup(args[1:], feishuSetupModeNew)
 	case "bind", "link":
 		runFeishuSetup(args[1:], feishuSetupModeBind)
+	case "doc":
+		runFeishuDoc(args[1:])
+	case "wiki":
+		runFeishuWiki(args[1:])
+	case "drive":
+		runFeishuDrive(args[1:])
 	case "help", "--help", "-h":
 		printFeishuUsage()
 	default:
@@ -351,6 +357,9 @@ Commands:
   setup   Unified entry: no credentials => NEW flow; with --app/--app-id => BIND flow
   new     Force NEW flow (QR onboarding). Rejects --app/--app-id.
   bind    Force BIND flow (requires app_id/app_secret).
+  doc     Cloud document operations: create, fetch, update.
+  wiki    Wiki operations: create, resolve.
+  drive   Drive operations: grant.
 
 Options:
   --config <path>             Path to config file

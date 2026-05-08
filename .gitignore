@@ -5,6 +5,8 @@ new-folder/
 AGENTS.md
 CC_CONNECT_DEVELOPMENT.md
 config.toml
+docs/
+prompts/
 .graphify_detect.json
 *.exe
 *.log
