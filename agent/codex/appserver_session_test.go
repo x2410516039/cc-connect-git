@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/chenhg5/cc-connect/core"
@@ -173,6 +174,128 @@ func TestMapAppServerRateLimits_PrefersMultiBucketView(t *testing.T) {
 	}
 }
 
+func TestMapAppServerConversationTurnExtractsUserAndAssistant(t *testing.T) {
+	started := int64(1700000000)
+	completed := int64(1700000060)
+	turn := mapAppServerConversationTurn(appServerTurn{
+		ID:          "turn-1",
+		Status:      "completed",
+		StartedAt:   &started,
+		CompletedAt: &completed,
+		Items: []map[string]any{
+			{
+				"type": "userMessage",
+				"content": []any{
+					map[string]any{"type": "text", "text": "hello"},
+					map[string]any{"type": "localImage", "path": "/tmp/a.png"},
+					map[string]any{"type": "text", "text": "world"},
+				},
+			},
+			{"type": "agentMessage", "text": "reply"},
+		},
+	}, 3)
+
+	if turn.ID != "turn-1" {
+		t.Fatalf("id = %q, want turn-1", turn.ID)
+	}
+	if turn.IndexFromNewest != 3 {
+		t.Fatalf("index = %d, want 3", turn.IndexFromNewest)
+	}
+	if turn.UserText != "hello\nworld" {
+		t.Fatalf("user text = %q, want joined text blocks", turn.UserText)
+	}
+	if turn.AssistantText != "reply" {
+		t.Fatalf("assistant text = %q, want reply", turn.AssistantText)
+	}
+	if !turn.Completed {
+		t.Fatal("completed = false, want true")
+	}
+	if got := turn.StartedAt.Unix(); got != started {
+		t.Fatalf("started = %d, want %d", got, started)
+	}
+}
+
+func TestMapAppServerConversationTurnExtractsLegacyTextBlocks(t *testing.T) {
+	turn := mapAppServerConversationTurn(appServerTurn{
+		ID:     "turn-legacy",
+		Status: "completed",
+		Items: []map[string]any{
+			{
+				"type": "userMessage",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": "legacy user"},
+				},
+			},
+			{
+				"type": "agentMessage",
+				"content": []any{
+					map[string]any{"type": "output_text", "text": "legacy reply"},
+				},
+			},
+		},
+	}, 0)
+
+	if turn.UserText != "legacy user" {
+		t.Fatalf("user text = %q, want legacy input_text", turn.UserText)
+	}
+	if turn.AssistantText != "legacy reply" {
+		t.Fatalf("assistant text = %q, want legacy output_text", turn.AssistantText)
+	}
+}
+
+func TestAppServerSession_HandleAgentMessageCompletedExtractsContentText(t *testing.T) {
+	for _, itemType := range []string{"agentMessage", "assistantMessage"} {
+		t.Run(itemType, func(t *testing.T) {
+			s := &appServerSession{events: make(chan core.Event, 1)}
+
+			s.handleItemCompleted(map[string]any{
+				"type": itemType,
+				"content": []any{
+					map[string]any{"type": "output_text", "text": "final reply"},
+				},
+			})
+			s.flushPendingAsText()
+
+			select {
+			case event := <-s.events:
+				if event.Type != core.EventText || event.Content != "final reply" {
+					t.Fatalf("event = %#v, want EventText final reply", event)
+				}
+			default:
+				t.Fatal("expected EventText")
+			}
+		})
+	}
+}
+
+func TestAppServerListenArgsUseStdioByDefault(t *testing.T) {
+	args, err := appServerListenArgs("")
+	if err != nil {
+		t.Fatalf("appServerListenArgs empty: %v", err)
+	}
+	if len(args) != 0 {
+		t.Fatalf("args = %#v, want no --listen override", args)
+	}
+
+	args, err = appServerListenArgs("stdio://")
+	if err != nil {
+		t.Fatalf("appServerListenArgs stdio: %v", err)
+	}
+	if len(args) != 0 {
+		t.Fatalf("args = %#v, want no --listen override", args)
+	}
+}
+
+func TestAppServerListenArgsRejectsWebSocketURL(t *testing.T) {
+	_, err := appServerListenArgs("ws://127.0.0.1:3845")
+	if err == nil {
+		t.Fatal("expected unsupported websocket URL error")
+	}
+	if !strings.Contains(err.Error(), "stdio") {
+		t.Fatalf("error = %v, want stdio guidance", err)
+	}
+}
+
 var _ interface {
 	GetUsage(context.Context) (*core.UsageReport, error)
 } = (*appServerSession)(nil)
@@ -180,3 +303,5 @@ var _ interface {
 var _ interface {
 	GetContextUsage() *core.ContextUsage
 } = (*appServerSession)(nil)
+
+var _ core.ConversationEditor = (*appServerSession)(nil)

@@ -661,8 +661,13 @@ func cardActionValue(action *callback.CallBackAction) string {
 	if action == nil {
 		return ""
 	}
-	if v, _ := action.Value["action"].(string); v != "" {
+	if v := cardActionValueFromMap(action.Value); v != "" {
 		return v
+	}
+	if nested := nestedCardActionValue(action.Value); nested != nil {
+		if v := cardActionValueFromMap(nested); v != "" {
+			return v
+		}
 	}
 	if action.Option != "" {
 		return action.Option
@@ -682,6 +687,43 @@ func cardActionValue(action *callback.CallBackAction) string {
 		return v
 	}
 	return ""
+}
+
+func cardActionValueFromMap(value map[string]any) string {
+	if value == nil {
+		return ""
+	}
+	if v, _ := value["action"].(string); v != "" {
+		return v
+	}
+	if v, _ := value["option"].(string); v != "" {
+		return v
+	}
+	if v := firstStringValue(value["options"]); v != "" {
+		return v
+	}
+	if v, _ := value["value"].(string); isKnownCardActionPrefix(v) {
+		return v
+	}
+	return ""
+}
+
+func nestedCardActionValue(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	switch nested := value["value"].(type) {
+	case map[string]any:
+		return nested
+	case map[string]string:
+		converted := make(map[string]any, len(nested))
+		for k, v := range nested {
+			converted[k] = v
+		}
+		return converted
+	default:
+		return nil
+	}
 }
 
 func firstStringValue(value any) string {
@@ -2493,6 +2535,11 @@ func (p *Platform) sessionKeyFromCardAction(chatID, userID string, value map[str
 	if value != nil {
 		if sessionKey, _ := value["session_key"].(string); sessionKey != "" {
 			return sessionKey
+		}
+		if nested := nestedCardActionValue(value); nested != nil {
+			if sessionKey, _ := nested["session_key"].(string); sessionKey != "" {
+				return sessionKey
+			}
 		}
 	}
 	if p.shareSessionInChannel {

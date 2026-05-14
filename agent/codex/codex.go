@@ -55,10 +55,6 @@ func New(opts map[string]any) (core.Agent, error) {
 	mode = normalizeMode(mode)
 	backend = normalizeBackend(backend)
 
-	if appServerURL == "" {
-		appServerURL = "ws://127.0.0.1:3845"
-	}
-
 	if _, err := exec.LookPath("codex"); err != nil {
 		return nil, fmt.Errorf("codex: 'codex' CLI not found in PATH, install with: npm install -g @openai/codex")
 	}
@@ -69,7 +65,7 @@ func New(opts map[string]any) (core.Agent, error) {
 		reasoningEffort: normalizeReasoningEffort(reasoningEffort),
 		mode:            mode,
 		backend:         backend,
-		appServerURL:    appServerURL,
+		appServerURL:    strings.TrimSpace(appServerURL),
 		codexHome:       strings.TrimSpace(codexHome),
 		activeIdx:       -1,
 	}, nil

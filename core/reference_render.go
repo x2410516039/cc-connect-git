@@ -28,6 +28,7 @@ var (
 	reInlineCodeSpan  = regexp.MustCompile("`([^`\n]+)`")
 	reBareURL         = regexp.MustCompile(`https?://[^\s<>()]+`)
 	reAbsOrFileRef    = regexp.MustCompile(`file:///[^\s` + "`" + `<>\[\](),，、;；。！？!?]+|/[^\s` + "`" + `<>\[\](),，、;；。！？!?]+`)
+	reWindowsAbsRef   = regexp.MustCompile(`[A-Za-z]:[\\/][^\s` + "`" + `<>\[\](),，、;；。！？!?]+`)
 	reRelativeRef     = regexp.MustCompile(`(?:\.\.?/|[A-Za-z0-9_.-]+/)[^\s` + "`" + `<>\[\](),，、;；。！？!?]+`)
 	reBasenameFileRef = regexp.MustCompile(`\b[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+(?:#L\d+(?:C\d+)?|:\d+(?::\d+)?|:\d+-\d+)?\b`)
 )
@@ -175,6 +176,7 @@ func transformNonCodeText(text string, cfg ReferenceRenderCfg, workspaceDir stri
 	text = replaceProtectedLinks(text, reBareURL, &replacements)
 	text = replaceMarkdownLinks(text, &replacements, workspaceDir)
 	text = replaceLocalReferenceCandidates(text, reAbsOrFileRef, &replacements, workspaceDir)
+	text = replaceLocalReferenceCandidates(text, reWindowsAbsRef, &replacements, workspaceDir)
 	text = replaceLocalReferenceCandidates(text, reRelativeRef, &replacements, workspaceDir)
 	text = replaceLocalReferenceCandidates(text, reBasenameFileRef, &replacements, workspaceDir)
 	return text, replacements
@@ -261,7 +263,7 @@ func replaceLocalReferenceCandidates(text string, re *regexp.Regexp, replacement
 	for _, m := range matches {
 		out.WriteString(text[last:m[0]])
 		token := text[m[0]:m[1]]
-		if re == reAbsOrFileRef && !isValidAbsoluteReferenceBoundary(text, m[0]) {
+		if (re == reAbsOrFileRef || re == reWindowsAbsRef) && !isValidAbsoluteReferenceBoundary(text, m[0]) {
 			out.WriteString(token)
 			last = m[1]
 			continue
@@ -456,8 +458,8 @@ func pathTail(ref *localReference, segs int) string {
 			source = cleanDisplayPath(ref.pathOriginal)
 		}
 	}
-	source = strings.TrimSuffix(source, "/")
-	parts := strings.Split(filepath.ToSlash(source), "/")
+	source = strings.TrimSuffix(cleanDisplayPath(source), "/")
+	parts := strings.Split(source, "/")
 	if len(parts) == 0 {
 		return source
 	}
@@ -471,13 +473,13 @@ func cleanDisplayPath(path string) string {
 	if path == "" {
 		return ""
 	}
-	path = filepath.ToSlash(path)
+	path = cleanReferencePath(path)
 	path = strings.TrimPrefix(path, "./")
 	return strings.TrimSpace(path)
 }
 
 func appendDirSuffix(path string, kind referenceKind) string {
-	path = filepath.ToSlash(strings.TrimSpace(path))
+	path = cleanDisplayPath(path)
 	if path == "" {
 		return path
 	}

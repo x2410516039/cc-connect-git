@@ -298,6 +298,7 @@ type interactiveState struct {
 	fromVoice              bool            // true if current turn originated from voice transcription
 	sideText               string
 	deleteMode             *deleteModeState
+	historyEdit            *historyEditState
 	modelSwitch            *modelSwitchState
 	pendingProviderAdd     *pendingProviderAddState
 	lastAutoCompressAt     time.Time
@@ -1176,7 +1177,7 @@ func (e *Engine) executeCronShell(p Platform, replyCtx any, job *CronJob) error 
 	}
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", job.Exec)
+	cmd := nativeShellCommandContext(ctx, job.Exec)
 	cmd.Dir = workDir
 	output, err := cmd.CombinedOutput()
 
@@ -1607,6 +1608,10 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			}
 			resolvedWorkspace = effectiveWorkspace
 		}
+	}
+
+	if e.handlePendingHistoryEdit(p, msg, content) {
+		return
 	}
 
 	if len(msg.Images) == 0 && strings.HasPrefix(content, "/") {
@@ -2451,10 +2456,13 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 			slog.Error("session resume failed, falling back to fresh session",
 				"session_key", sessionKey, "failed_session_id", startSessionID,
 				"error", err, "elapsed", startElapsed)
+			session.SetAgentSessionID("", agent.Name())
+			sessions.Save()
 			startAt = time.Now()
 			agentSession, err = agent.StartSession(e.ctx, "")
 			startElapsed = time.Since(startAt)
 			if err == nil {
+				isResume = false
 				slog.Info("fresh session started after resume failure",
 					"session_key", sessionKey, "elapsed", startElapsed)
 			}
@@ -3472,6 +3480,7 @@ var builtinCommands = []struct {
 	{[]string{"restart"}, "restart"},
 	{[]string{"alias"}, "alias"},
 	{[]string{"delete", "del", "rm"}, "delete"},
+	{[]string{"edit"}, "edit"},
 	{[]string{"bind"}, "bind"},
 	{[]string{"search", "find"}, "search"},
 	{[]string{"shell", "sh", "exec", "run"}, "shell"},
@@ -3660,6 +3669,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		e.cmdAlias(p, msg, args)
 	case "delete":
 		e.cmdDelete(p, msg, args)
+	case "edit":
+		e.cmdEdit(p, msg)
 	case "bind":
 		e.cmdBind(p, msg, args)
 	case "search":
@@ -3991,10 +4002,87 @@ func (e *Engine) cmdNew(p Platform, msg *Message, args []string) {
 // filter_external_sessions config. When disabled (default), all sessions are
 // returned. When enabled, only sessions tracked by cc-connect are shown.
 func (e *Engine) applySessionFilter(sessions []AgentSessionInfo, sm *SessionManager) []AgentSessionInfo {
+	sessions = dedupeAgentSessionsByID(sessions)
 	if !e.filterExternalSessions {
 		return sessions
 	}
 	return filterOwnedSessions(sessions, sm.KnownAgentSessionIDs())
+}
+
+func (e *Engine) listAgentSessionsForUser(agent Agent, sessions *SessionManager, sessionKey string) ([]AgentSessionInfo, error) {
+	agentSessions, err := agent.ListSessions(e.ctx)
+	if err != nil {
+		return nil, err
+	}
+	agentSessions = mergeLocalAgentSessions(agentSessions, sessions, sessionKey)
+	return e.applySessionFilter(agentSessions, sessions), nil
+}
+
+func mergeLocalAgentSessions(agentSessions []AgentSessionInfo, sessions *SessionManager, sessionKey string) []AgentSessionInfo {
+	if sessions == nil || sessionKey == "" {
+		return agentSessions
+	}
+	seen := make(map[string]struct{}, len(agentSessions))
+	for _, s := range agentSessions {
+		if s.ID != "" {
+			seen[s.ID] = struct{}{}
+		}
+	}
+	for _, local := range sessions.ListSessions(sessionKey) {
+		agentID := local.GetAgentSessionID()
+		if agentID == "" {
+			continue
+		}
+		if _, ok := seen[agentID]; ok {
+			continue
+		}
+		history := local.GetHistory(0)
+		agentSessions = append(agentSessions, AgentSessionInfo{
+			ID:           agentID,
+			Summary:      localAgentSessionSummary(sessions, local, history),
+			MessageCount: len(history),
+			ModifiedAt:   local.GetUpdatedAt(),
+		})
+		seen[agentID] = struct{}{}
+	}
+	return agentSessions
+}
+
+func localAgentSessionSummary(sessions *SessionManager, local *Session, history []HistoryEntry) string {
+	if sessions != nil {
+		if name := strings.TrimSpace(sessions.GetSessionName(local.GetAgentSessionID())); name != "" {
+			return name
+		}
+	}
+	if name := strings.TrimSpace(local.GetName()); name != "" && !strings.EqualFold(name, "default") && !strings.EqualFold(name, "session") {
+		return name
+	}
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role == "user" && strings.TrimSpace(history[i].Content) != "" {
+			return strings.TrimSpace(history[i].Content)
+		}
+	}
+	return ""
+}
+
+func dedupeAgentSessionsByID(sessions []AgentSessionInfo) []AgentSessionInfo {
+	if len(sessions) < 2 {
+		return sessions
+	}
+	filtered := make([]AgentSessionInfo, 0, len(sessions))
+	seen := make(map[string]struct{}, len(sessions))
+	for _, s := range sessions {
+		if s.ID == "" {
+			filtered = append(filtered, s)
+			continue
+		}
+		if _, ok := seen[s.ID]; ok {
+			continue
+		}
+		seen[s.ID] = struct{}{}
+		filtered = append(filtered, s)
+	}
+	return filtered
 }
 
 // filterOwnedSessions removes agent sessions that are not tracked by cc-connect's
@@ -4027,12 +4115,11 @@ func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 	}
 
 	if !supportsCards(p) {
-		agentSessions, err := agent.ListSessions(e.ctx)
+		agentSessions, err := e.listAgentSessionsForUser(agent, sessions, msg.SessionKey)
 		if err != nil {
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgListError), err))
 			return
 		}
-		agentSessions = e.applySessionFilter(agentSessions, sessions)
 		if len(agentSessions) == 0 {
 			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgListEmpty))
 			return
@@ -4124,12 +4211,11 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
 	}
-	agentSessions, err := agent.ListSessions(e.ctx)
+	agentSessions, err := e.listAgentSessionsForUser(agent, sessions, msg.SessionKey)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, err))
 		return
 	}
-	agentSessions = e.applySessionFilter(agentSessions, sessions)
 
 	matched := e.matchSession(agentSessions, sessions, query)
 	if matched == nil {
@@ -4440,19 +4526,14 @@ func compactReplyFooterPath(path string) string {
 		return ""
 	}
 	path = normalizeWorkspacePath(path)
-	if home, err := os.UserHomeDir(); err == nil {
-		home = normalizeWorkspacePath(home)
-		if path == home {
-			return "~"
-		}
-		prefix := home + string(os.PathSeparator)
-		if strings.HasPrefix(path, prefix) {
-			return "~" + filepath.ToSlash(strings.TrimPrefix(path, home))
+	for _, home := range replyFooterHomeDirs() {
+		if compact, ok := compactPathUnderHome(path, home); ok {
+			return compact
 		}
 	}
 
-	slash := filepath.ToSlash(path)
-	if filepath.IsAbs(path) {
+	slash := cleanReferencePath(path)
+	if isAbsLocalPath(path) {
 		trimmed := strings.Trim(slash, "/")
 		if trimmed == "" {
 			return "/"
@@ -4468,6 +4549,60 @@ func compactReplyFooterPath(path string) string {
 		return "…/" + strings.Join(parts[start:], "/")
 	}
 	return slash
+}
+
+func replyFooterHomeDirs() []string {
+	var homes []string
+	if home, err := os.UserHomeDir(); err == nil {
+		homes = append(homes, home)
+	}
+	for _, key := range []string{"HOME", "USERPROFILE"} {
+		if home := strings.TrimSpace(os.Getenv(key)); home != "" {
+			homes = append(homes, home)
+		}
+	}
+	if drive, homePath := strings.TrimSpace(os.Getenv("HOMEDRIVE")), strings.TrimSpace(os.Getenv("HOMEPATH")); drive != "" && homePath != "" {
+		homes = append(homes, drive+homePath)
+	}
+
+	out := make([]string, 0, len(homes))
+	seen := make(map[string]struct{}, len(homes))
+	for _, home := range homes {
+		for _, candidate := range []string{home, normalizeWorkspacePath(home)} {
+			key := localPathCompareKey(candidate)
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, candidate)
+		}
+	}
+	return out
+}
+
+func compactPathUnderHome(path, home string) (string, bool) {
+	path = strings.TrimSuffix(cleanReferencePath(path), "/")
+	home = strings.TrimSuffix(cleanReferencePath(home), "/")
+	if path == "" || home == "" {
+		return "", false
+	}
+	pathKey := localPathCompareKey(path)
+	homeKey := localPathCompareKey(home)
+	if pathKey == homeKey {
+		return "~", true
+	}
+	prefix := homeKey + "/"
+	if !strings.HasPrefix(pathKey, prefix) {
+		return "", false
+	}
+	rel := strings.TrimPrefix(path[len(home):], "/")
+	if rel == "" {
+		return "~", true
+	}
+	return "~/" + rel, true
 }
 
 func appendReplyFooter(content, footer string) string {
@@ -4558,7 +4693,7 @@ func (e *Engine) cmdShell(p Platform, msg *Message, raw string) {
 		ctx, cancel := context.WithTimeout(e.ctx, timeout)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, "sh", "-c", shellCmd)
+		cmd := nativeShellCommandContext(ctx, shellCmd)
 		cmd.Dir = workDir
 		output, err := cmd.CombinedOutput()
 
@@ -4891,12 +5026,11 @@ func (e *Engine) cmdSearch(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
 	}
-	agentSessions, err := agent.ListSessions(e.ctx)
+	agentSessions, err := e.listAgentSessionsForUser(agent, sessions, msg.SessionKey)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgSearchError), err))
 		return
 	}
-	agentSessions = e.applySessionFilter(agentSessions, sessions)
 
 	type searchResult struct {
 		id           string
@@ -4985,12 +5119,11 @@ func (e *Engine) cmdName(p Platform, msg *Message, args []string) {
 			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgNameUsage))
 			return
 		}
-		agentSessions, err := agent.ListSessions(e.ctx)
+		agentSessions, err := e.listAgentSessionsForUser(agent, sessions, msg.SessionKey)
 		if err != nil {
 			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, err))
 			return
 		}
-		agentSessions = e.applySessionFilter(agentSessions, sessions)
 		if idx > len(agentSessions) {
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgSwitchNoSession), idx))
 			return
@@ -5765,6 +5898,7 @@ func helpCardGroups() []helpCardGroup {
 				{command: "/search", action: "cmd:/search"},
 				{command: "/history", action: "nav:/history"},
 				{command: "/delete", action: "nav:/delete"},
+				{command: "/edit", action: "act:/edit"},
 				{command: "/name", action: "cmd:/name"},
 			},
 		},
@@ -7786,6 +7920,7 @@ func (e *Engine) replyWithCard(p Platform, replyCtx any, card *Card) {
 		rendered := e.renderCardForPlatform(p, card)
 		if err := cs.ReplyCard(e.ctx, replyCtx, rendered); err != nil {
 			slog.Error("card reply failed", "platform", p.Name(), "error", err)
+			e.reply(p, replyCtx, rendered.RenderText())
 		}
 		return
 	}
@@ -7806,6 +7941,7 @@ func (e *Engine) sendWithCard(p Platform, replyCtx any, card *Card) {
 		rendered := e.renderCardForPlatform(p, card)
 		if err := cs.SendCard(e.ctx, replyCtx, rendered); err != nil {
 			slog.Error("card send failed", "platform", p.Name(), "error", err)
+			e.send(p, replyCtx, rendered.RenderText())
 		}
 		return
 	}
@@ -7912,6 +8048,13 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 			return e.renderListCardSafe(sessionKey, 1)
 		}
 		return e.renderDeleteModeCard(sessionKey)
+	case "/edit":
+		return e.renderEditCard(sessionKey)
+	case "/edit-mode":
+		if strings.HasPrefix(args, "cancel") {
+			return e.renderHelpCard()
+		}
+		return e.renderEditCard(sessionKey)
 	case "/stop":
 		return e.renderStatusCard(sessionKey, extractUserID(sessionKey))
 	case "/upgrade":
@@ -8133,6 +8276,12 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 
 	case "/delete-mode":
 		e.executeDeleteModeAction(sessionKey, args)
+
+	case "/edit":
+		e.prepareEditWaitForSession(sessionKey, nil, nil)
+
+	case "/edit-mode":
+		e.executeEditModeAction(sessionKey, args)
 
 	case "/switch":
 		if args == "" {
@@ -8880,11 +9029,10 @@ func (e *Engine) renderModeCard() *Card {
 
 func (e *Engine) renderListCard(sessionKey string, page int) (*Card, error) {
 	agent, sessions := e.sessionContextForKey(sessionKey)
-	agentSessions, err := agent.ListSessions(e.ctx)
+	agentSessions, err := e.listAgentSessionsForUser(agent, sessions, sessionKey)
 	if err != nil {
 		return nil, fmt.Errorf(e.i18n.T(MsgListError), err)
 	}
-	agentSessions = e.applySessionFilter(agentSessions, sessions)
 	if len(agentSessions) == 0 {
 		return e.simpleCard(e.i18n.Tf(MsgCardTitleSessions, agent.Name(), 0), "turquoise", e.i18n.T(MsgListEmpty)), nil
 	}
@@ -10131,13 +10279,7 @@ func (e *Engine) executeShellCommand(p Platform, msg *Message, cmd *CustomComman
 	ctx, cancel := context.WithTimeout(e.ctx, 60*time.Second)
 	defer cancel()
 
-	// Execute command using the native shell so Windows config commands work too.
-	var shellCmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		shellCmd = exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", execCmd)
-	} else {
-		shellCmd = exec.CommandContext(ctx, "sh", "-c", execCmd)
-	}
+	shellCmd := nativeShellCommandContext(ctx, execCmd)
 	shellCmd.Dir = workDir
 	envVars := []string{
 		"CC_PROJECT=" + e.name,

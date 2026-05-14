@@ -209,6 +209,13 @@ func (s *Session) ClearHistory() {
 	s.History = nil
 }
 
+func (s *Session) SetHistory(entries []HistoryEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.History = append([]HistoryEntry(nil), entries...)
+	s.UpdatedAt = time.Now()
+}
+
 // GetHistory returns the last n entries. If n <= 0, returns all.
 func (s *Session) GetHistory(n int) []HistoryEntry {
 	s.mu.Lock()

@@ -3,6 +3,7 @@ package core
 import (
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -12,6 +13,22 @@ import (
 // If the path cannot be resolved (e.g. doesn't exist yet), falls back to
 // filepath.Clean only.
 func normalizeWorkspacePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if isAbsLocalPath(path) && strings.HasPrefix(cleanReferencePath(path), "/") {
+		cleaned := cleanReferencePath(path)
+		resolved, err := filepath.EvalSymlinks(cleaned)
+		if err != nil {
+			return cleaned
+		}
+		resolved = cleanReferencePath(resolved)
+		if resolved != cleaned {
+			slog.Debug("workspace path normalized", "original", path, "normalized", resolved)
+		}
+		return resolved
+	}
 	cleaned := filepath.Clean(path)
 	resolved, err := filepath.EvalSymlinks(cleaned)
 	if err != nil {

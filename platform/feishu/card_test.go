@@ -170,6 +170,28 @@ func TestRenderCardMap_DefaultActionsStayActionRow(t *testing.T) {
 	}
 }
 
+func TestRenderCardMap_EditActionsCarryCallbacks(t *testing.T) {
+	card := core.NewCard().
+		Title("Edit Previous Message", "yellow").
+		Markdown("Send the replacement message.").
+		Buttons(
+			core.DefaultBtn("Cancel", "act:/edit-mode cancel"),
+		).
+		Build()
+	got := decodeRenderedCard(t, card)
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal rendered card failed: %v", err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, `"template":"yellow"`) {
+		t.Fatalf("expected yellow header, got %s", s)
+	}
+	if !strings.Contains(s, `"action":"act:/edit-mode cancel"`) {
+		t.Fatalf("expected edit action callback, got %s", s)
+	}
+}
+
 func TestRenderCardMap_DeleteModeUsesCheckerForm(t *testing.T) {
 	card := core.NewCard().
 		Title("删除会话", "carmine").
@@ -225,6 +247,64 @@ func TestRenderCardMap_DeleteModeUsesCheckerForm(t *testing.T) {
 	}
 	if strings.Contains(s, `act:/delete-mode toggle`) {
 		t.Fatalf("expected no toggle buttons in rendered card, got %s", s)
+	}
+}
+
+func TestRenderCardMap_DeleteModeDeduplicatesCheckerNames(t *testing.T) {
+	card := core.NewCard().
+		Title("删除会话", "carmine").
+		ListItemBtn("◻ **1.** One · **10** msgs · 03-13 20:00", "选择", "default", "act:/delete-mode toggle session-1").
+		ListItemBtn("◻ **2.** Duplicate · **9** msgs · 03-13 20:01", "选择", "default", "act:/delete-mode toggle session-1").
+		ListItemBtn("◻ **3.** Two · **8** msgs · 03-13 20:02", "选择", "default", "act:/delete-mode toggle session-2").
+		Buttons(core.DangerBtn("删除已选", "act:/delete-mode confirm")).
+		Build()
+
+	got := decodeRenderedCard(t, card)
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal rendered card failed: %v", err)
+	}
+	s := string(raw)
+	if got := strings.Count(s, deleteModeCheckerName("session-1")); got != 1 {
+		t.Fatalf("session-1 checker name count = %d, want 1, got %s", got, s)
+	}
+	if got := strings.Count(s, `"tag":"checker"`); got != 2 {
+		t.Fatalf("checker count = %d, want 2, got %s", got, s)
+	}
+}
+
+func TestRenderCardMap_DeleteModeInjectsSessionKeyIntoFormActions(t *testing.T) {
+	const sessionKey = "feishu:oc_chat:root:om_root"
+	card := core.NewCard().
+		Title("删除会话", "carmine").
+		ListItemBtn("◻ **1.** One · **10** msgs · 03-13 20:00", "选择", "default", "act:/delete-mode toggle session-1").
+		Buttons(
+			core.DangerBtn("删除已选", "act:/delete-mode confirm"),
+			core.DefaultBtn("取消", "act:/delete-mode cancel"),
+		).
+		Buttons(core.DefaultBtn("下一页", "act:/delete-mode page 2")).
+		Build()
+
+	got := renderCardMap(card, sessionKey)
+	elements := got["elements"].([]map[string]any)
+	form := elements[0]
+	formElements := form["elements"].([]map[string]any)
+	buttonColumns := formElements[len(formElements)-1]["columns"].([]map[string]any)
+	submit := buttonColumns[0]["elements"].([]map[string]any)[0]
+	submitValue := submit["value"].(map[string]string)
+	if submitValue["session_key"] != sessionKey {
+		t.Fatalf("submit session_key = %#v, want %q", submitValue["session_key"], sessionKey)
+	}
+	cancel := buttonColumns[1]["elements"].([]map[string]any)[0]
+	cancelValue := cancel["value"].(map[string]string)
+	if cancelValue["session_key"] != sessionKey {
+		t.Fatalf("cancel session_key = %#v, want %q", cancelValue["session_key"], sessionKey)
+	}
+
+	navActions := elements[1]["actions"].([]map[string]any)
+	navValue := navActions[0]["value"].(map[string]string)
+	if navValue["session_key"] != sessionKey {
+		t.Fatalf("nav session_key = %#v, want %q", navValue["session_key"], sessionKey)
 	}
 }
 

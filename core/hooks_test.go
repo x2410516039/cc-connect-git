@@ -2,11 +2,13 @@ package core
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,11 +21,11 @@ func boolPtr(v bool) *bool { return &v }
 func TestNewHookManager_ValidatesConfig(t *testing.T) {
 	hooks := []HookConfig{
 		{Event: "message.received", Type: "command", Command: "echo ok"},
-		{Event: "", Type: "command", Command: "echo bad"},         // missing event
-		{Event: "error", Type: "http", URL: ""},                   // missing url
-		{Event: "error", Type: "http", URL: "ftp://bad"},          // bad url scheme
-		{Event: "error", Type: "unknown", Command: "echo"},        // bad type
-		{Event: "error", Type: "command", Command: ""},            // missing command
+		{Event: "", Type: "command", Command: "echo bad"},  // missing event
+		{Event: "error", Type: "http", URL: ""},            // missing url
+		{Event: "error", Type: "http", URL: "ftp://bad"},   // bad url scheme
+		{Event: "error", Type: "unknown", Command: "echo"}, // bad type
+		{Event: "error", Type: "command", Command: ""},     // missing command
 		{Event: "message.sent", Type: "http", URL: "http://ok.com"},
 	}
 	hm := NewHookManager("test", hooks)
@@ -113,7 +115,7 @@ func TestEmit_CommandHook(t *testing.T) {
 		{
 			Event:   "message.received",
 			Type:    "command",
-			Command: "touch " + marker,
+			Command: hookTouchCommand(marker),
 			Async:   boolPtr(false),
 		},
 	}
@@ -140,7 +142,7 @@ func TestEmit_CommandHookEnvVars(t *testing.T) {
 		{
 			Event:   "message.received",
 			Type:    "command",
-			Command: "env > " + outFile,
+			Command: hookEnvCommand(outFile),
 			Async:   boolPtr(false),
 		},
 	}
@@ -267,8 +269,8 @@ func TestEmit_OnlyMatchingHooksFire(t *testing.T) {
 	unmatchedFile := filepath.Join(dir, "unmatched")
 
 	hooks := []HookConfig{
-		{Event: "session.ended", Type: "command", Command: "touch " + matchedFile, Async: boolPtr(false)},
-		{Event: "message.received", Type: "command", Command: "touch " + unmatchedFile, Async: boolPtr(false)},
+		{Event: "session.ended", Type: "command", Command: hookTouchCommand(matchedFile), Async: boolPtr(false)},
+		{Event: "message.received", Type: "command", Command: hookTouchCommand(unmatchedFile), Async: boolPtr(false)},
 	}
 	hm := NewHookManager("proj", hooks)
 
@@ -290,7 +292,7 @@ func TestEmit_AsyncDoesNotBlock(t *testing.T) {
 		{
 			Event:   "message.received",
 			Type:    "command",
-			Command: "sleep 0.1 && touch " + marker,
+			Command: hookSleepThenTouchCommand(100*time.Millisecond, marker),
 			Async:   boolPtr(true),
 		},
 	}
@@ -304,10 +306,16 @@ func TestEmit_AsyncDoesNotBlock(t *testing.T) {
 		t.Errorf("async emit took %v, expected near-instant return", elapsed)
 	}
 
-	// Wait for the async command to finish
-	time.Sleep(300 * time.Millisecond)
-	if _, err := os.Stat(marker); os.IsNotExist(err) {
-		t.Error("expected async command to eventually create marker file")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Error("expected async command to eventually create marker file")
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 
@@ -319,7 +327,7 @@ func TestEmit_SyncBlocks(t *testing.T) {
 		{
 			Event:   "message.received",
 			Type:    "command",
-			Command: "touch " + marker,
+			Command: hookTouchCommand(marker),
 			Async:   boolPtr(false),
 		},
 	}
@@ -346,7 +354,7 @@ func TestEmit_CommandTimeout(t *testing.T) {
 		{
 			Event:   "message.received",
 			Type:    "command",
-			Command: "sleep 10",
+			Command: hookSleepCommand(10),
 			Async:   boolPtr(false),
 			Timeout: 1,
 		},
@@ -361,6 +369,42 @@ func TestEmit_CommandTimeout(t *testing.T) {
 	if elapsed > 5*time.Second {
 		t.Errorf("expected command to timeout within ~3s, took %v", elapsed)
 	}
+}
+
+func hookTouchCommand(path string) string {
+	if runtime.GOOS == "windows" {
+		return "New-Item -ItemType File -Force -Path " + psQuote(path) + " | Out-Null"
+	}
+	return "touch " + shQuote(path)
+}
+
+func hookEnvCommand(path string) string {
+	if runtime.GOOS == "windows" {
+		return "Get-ChildItem Env: | ForEach-Object { \"$($_.Name)=$($_.Value)\" } | Set-Content -Encoding utf8 -Path " + psQuote(path)
+	}
+	return "env > " + shQuote(path)
+}
+
+func hookSleepThenTouchCommand(delay time.Duration, path string) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf("Start-Sleep -Milliseconds %d; New-Item -ItemType File -Force -Path %s | Out-Null", delay.Milliseconds(), psQuote(path))
+	}
+	return fmt.Sprintf("sleep %.3f && touch %s", delay.Seconds(), shQuote(path))
+}
+
+func hookSleepCommand(seconds int) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf("Start-Sleep -Seconds %d", seconds)
+	}
+	return fmt.Sprintf("sleep %d", seconds)
+}
+
+func psQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func TestEventToEnv(t *testing.T) {

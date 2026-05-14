@@ -108,7 +108,7 @@ func renderCardMap(card *core.Card, sessionKey string) map[string]any {
 			"template": color,
 		}
 	}
-	if transformed, ok := renderDeleteModeCheckerCard(card, result); ok {
+	if transformed, ok := renderDeleteModeCheckerCard(card, sessionKey, result); ok {
 		return transformed
 	}
 	if helpElements, ok := renderHelpCardElements(card, sessionKey); ok {
@@ -445,7 +445,7 @@ type deleteModeCheckerRow struct {
 	checked bool
 }
 
-func renderDeleteModeCheckerCard(card *core.Card, base map[string]any) (map[string]any, bool) {
+func renderDeleteModeCheckerCard(card *core.Card, sessionKey string, base map[string]any) (map[string]any, bool) {
 	if card == nil {
 		return nil, false
 	}
@@ -455,6 +455,7 @@ func renderDeleteModeCheckerCard(card *core.Card, base map[string]any) (map[stri
 	navRows := make([]core.CardActions, 0)
 	submitText := ""
 	cancelText := ""
+	seenCheckerIDs := make(map[string]struct{})
 
 	for _, elem := range card.Elements {
 		switch e := elem.(type) {
@@ -471,6 +472,10 @@ func renderDeleteModeCheckerCard(card *core.Card, base map[string]any) (map[stri
 				})
 				continue
 			}
+			if _, ok := seenCheckerIDs[id]; ok {
+				continue
+			}
+			seenCheckerIDs[id] = struct{}{}
 			row := deleteModeCheckerRow{
 				id:      id,
 				text:    text,
@@ -526,6 +531,10 @@ func renderDeleteModeCheckerCard(card *core.Card, base map[string]any) (map[stri
 	}
 	formElements := append([]map[string]any{}, formRowElements...)
 
+	submitValue := map[string]string{"action": "act:/delete-mode form-submit"}
+	if sessionKey != "" {
+		submitValue["session_key"] = sessionKey
+	}
 	buttonColumns := []map[string]any{
 		{
 			"tag":            "column",
@@ -538,12 +547,16 @@ func renderDeleteModeCheckerCard(card *core.Card, base map[string]any) (map[stri
 					"type":             "danger",
 					"name":             "delete_mode_submit",
 					"form_action_type": "submit",
-					"value":            map[string]string{"action": "act:/delete-mode form-submit"},
+					"value":            submitValue,
 				},
 			},
 		},
 	}
 	if cancelText != "" {
+		cancelValue := map[string]string{"action": "act:/delete-mode cancel"}
+		if sessionKey != "" {
+			cancelValue["session_key"] = sessionKey
+		}
 		buttonColumns = append(buttonColumns, map[string]any{
 			"tag":            "column",
 			"width":          "auto",
@@ -554,7 +567,7 @@ func renderDeleteModeCheckerCard(card *core.Card, base map[string]any) (map[stri
 					"text":  plainText(cancelText),
 					"type":  "default",
 					"name":  "delete_mode_cancel",
-					"value": map[string]string{"action": "act:/delete-mode cancel"},
+					"value": cancelValue,
 				},
 			},
 		})
@@ -579,6 +592,9 @@ func renderDeleteModeCheckerCard(card *core.Card, base map[string]any) (map[stri
 				btnType = "default"
 			}
 			valMap := map[string]string{"action": btn.Value}
+			if sessionKey != "" {
+				valMap["session_key"] = sessionKey
+			}
 			for k, v := range btn.Extra {
 				valMap[k] = v
 			}

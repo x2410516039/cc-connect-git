@@ -1,12 +1,9 @@
-﻿.testcache/
-.gocache/
-graphify-out/
-new-folder/
-AGENTS.md
+﻿AGENTS.md
+AGENTS.zn.md
 CC_CONNECT_DEVELOPMENT.md
 config.toml
 docs/
-prompts/
-.graphify_detect.json
+skills/
+.cc-connect-runtime/
 *.exe
 *.log

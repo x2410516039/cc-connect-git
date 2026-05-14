@@ -55,13 +55,20 @@ func listCodexSessions(workDir, codexHome string) ([]core.AgentSessionInfo, erro
 		return nil, nil
 	}
 
-	var sessions []core.AgentSessionInfo
+	byID := make(map[string]core.AgentSessionInfo, len(files))
 	for _, f := range files {
 		info := parseCodexSessionFile(f, absWorkDir)
 		if info != nil {
 			patchSessionSource(info.ID, codexHome)
-			sessions = append(sessions, *info)
+			if existing, ok := byID[info.ID]; !ok || info.ModifiedAt.After(existing.ModifiedAt) {
+				byID[info.ID] = *info
+			}
 		}
+	}
+
+	sessions := make([]core.AgentSessionInfo, 0, len(byID))
+	for _, info := range byID {
+		sessions = append(sessions, info)
 	}
 
 	sort.Slice(sessions, func(i, j int) bool {

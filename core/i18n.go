@@ -429,6 +429,15 @@ const (
 	MsgDeleteModeDeletingTitle  MsgKey = "delete_mode_deleting_title"
 	MsgDeleteModeDeletingBody   MsgKey = "delete_mode_deleting_body"
 	MsgDeleteModeMissingSession MsgKey = "delete_mode_missing_session"
+	MsgHistoryEditNotSupported  MsgKey = "history_edit_not_supported"
+	MsgHistoryEditNoSession     MsgKey = "history_edit_no_session"
+	MsgHistoryEditNoPlatform    MsgKey = "history_edit_no_platform"
+	MsgHistoryEditFailed        MsgKey = "history_edit_failed"
+	MsgEditWaitingTitle         MsgKey = "edit_waiting_title"
+	MsgEditWaitingBody          MsgKey = "edit_waiting_body"
+	MsgEditCancelButton         MsgKey = "edit_cancel_button"
+	MsgEditNoMessage            MsgKey = "edit_no_message"
+	MsgEditSessionName          MsgKey = "edit_session_name"
 
 	MsgSwitchSuccess   MsgKey = "switch_success"
 	MsgSwitchNoMatch   MsgKey = "switch_no_match"
@@ -480,6 +489,7 @@ const (
 	MsgBuiltinCmdSearch    MsgKey = "search"
 	MsgBuiltinCmdSwitch    MsgKey = "switch"
 	MsgBuiltinCmdDelete    MsgKey = "delete"
+	MsgBuiltinCmdEdit      MsgKey = "edit"
 	MsgBuiltinCmdName      MsgKey = "name"
 	MsgBuiltinCmdCurrent   MsgKey = "current"
 	MsgBuiltinCmdHistory   MsgKey = "history"
@@ -864,6 +874,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/search <keyword>\n  Search sessions by name or ID\n\n" +
 			"/switch <number>\n  Resume a session by its list number\n\n" +
 			"/delete <number>|1,2,3|3-7|1,3-5,8\n  Delete sessions by list number(s)\n\n" +
+			"/edit\n  Edit the previous ordinary user message\n\n" +
 			"/name [number] <text>\n  Name a session for easy identification\n\n" +
 			"/current\n  Show current active session\n\n" +
 			"/history [n]\n  Show last n messages (default 10)\n\n" +
@@ -907,6 +918,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/search <关键词>\n  搜索会话名称或 ID\n\n" +
 			"/switch <序号>\n  按列表序号切换会话\n\n" +
 			"/delete <序号>|1,2,3|3-7|1,3-5,8\n  按列表序号批量/单个删除会话\n\n" +
+			"/edit\n  编辑上一条普通用户消息\n\n" +
 			"/name [序号] <名称>\n  给会话命名，方便识别\n\n" +
 			"/current\n  查看当前活跃会话\n\n" +
 			"/history [n]\n  查看最近 n 条消息（默认 10）\n\n" +
@@ -950,6 +962,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/search <關鍵詞>\n  搜尋會話名稱或 ID\n\n" +
 			"/switch <序號>\n  按列表序號切換會話\n\n" +
 			"/delete <序號>|1,2,3|3-7|1,3-5,8\n  按列表序號批量/單筆刪除會話\n\n" +
+			"/edit\n  編輯上一則普通使用者訊息\n\n" +
 			"/name [序號] <名稱>\n  為會話命名，方便辨識\n\n" +
 			"/current\n  查看當前活躍會話\n\n" +
 			"/history [n]\n  查看最近 n 條訊息（預設 10）\n\n" +
@@ -991,6 +1004,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/list\n  エージェントセッション一覧\n\n" +
 			"/switch <番号>\n  リスト番号でセッションを切り替え\n\n" +
 			"/delete <番号>|1,2,3|3-7|1,3-5,8\n  リスト番号でセッションを単体/複数削除\n\n" +
+			"/edit\n  直前の通常ユーザーメッセージを編集\n\n" +
 			"/name [番号] <名前>\n  セッションに名前を付ける\n\n" +
 			"/current\n  現在のアクティブセッションを表示\n\n" +
 			"/history [n]\n  直近 n 件のメッセージを表示（デフォルト 10）\n\n" +
@@ -1032,6 +1046,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/list\n  Listar sesiones del agente\n\n" +
 			"/switch <número>\n  Reanudar sesión por su número en la lista\n\n" +
 			"/delete <número>|1,2,3|3-7|1,3-5,8\n  Eliminar una o varias sesiones por número de lista\n\n" +
+			"/edit\n  Editar el mensaje ordinario anterior\n\n" +
 			"/name [número] <texto>\n  Nombrar una sesión para fácil identificación\n\n" +
 			"/current\n  Mostrar sesión activa actual\n\n" +
 			"/history [n]\n  Mostrar últimos n mensajes (por defecto 10)\n\n" +
@@ -1083,6 +1098,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/search <keyword> — Search sessions\n" +
 			"/switch <number> — Resume a session\n" +
 			"/delete <number>|1,2,3|3-7|1,3-5,8 — Delete session(s)\n" +
+			"/edit — Edit previous message\n" +
 			"/name [number] <text> — Name a session\n" +
 			"/current — Show active session\n" +
 			"/history [n] — Show last n messages",
@@ -1092,6 +1108,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/search <关键词> — 搜索会话\n" +
 			"/switch <序号> — 切换会话\n" +
 			"/delete <序号>|1,2,3|3-7|1,3-5,8 — 删除会话\n" +
+			"/edit — 编辑上一条消息\n" +
 			"/name [序号] <名称> — 命名会话\n" +
 			"/current — 查看当前会话\n" +
 			"/history [n] — 查看最近 n 条消息",
@@ -1101,6 +1118,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/search <關鍵詞> — 搜尋會話\n" +
 			"/switch <序號> — 切換會話\n" +
 			"/delete <序號>|1,2,3|3-7|1,3-5,8 — 刪除會話\n" +
+			"/edit — 編輯上一則訊息\n" +
 			"/name [序號] <名稱> — 命名會話\n" +
 			"/current — 查看當前會話\n" +
 			"/history [n] — 查看最近 n 條訊息",
@@ -1110,6 +1128,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/search <キーワード> — セッション検索\n" +
 			"/switch <番号> — セッション切り替え\n" +
 			"/delete <番号>|1,2,3|3-7|1,3-5,8 — セッション削除\n" +
+			"/edit — 前のメッセージを編集\n" +
 			"/name [番号] <名前> — セッションに名前を付ける\n" +
 			"/current — 現在のセッションを表示\n" +
 			"/history [n] — 直近 n 件のメッセージを表示",
@@ -1119,6 +1138,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/search <keyword> — Buscar sesiones\n" +
 			"/switch <número> — Reanudar sesión\n" +
 			"/delete <número>|1,2,3|3-7|1,3-5,8 — Eliminar sesión(es)\n" +
+			"/edit — Editar mensaje anterior\n" +
 			"/name [número] <texto> — Nombrar sesión\n" +
 			"/current — Mostrar sesión activa\n" +
 			"/history [n] — Mostrar últimos n mensajes",
@@ -3002,6 +3022,69 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "❌ 選択したセッションが見つかりません: %s",
 		LangSpanish:            "❌ Falta la sesión seleccionada: %s",
 	},
+	MsgHistoryEditNotSupported: {
+		LangEnglish:            "Not supported by this backend. /edit requires the Codex app_server backend.",
+		LangChinese:            "当前后端不支持。/edit 需要 Codex app_server 后端。",
+		LangTraditionalChinese: "當前後端不支援。/edit 需要 Codex app_server 後端。",
+		LangJapanese:           "このバックエンドでは未対応です。/edit には Codex app_server バックエンドが必要です。",
+		LangSpanish:            "Este backend no lo admite. /edit requiere el backend Codex app_server.",
+	},
+	MsgHistoryEditNoSession: {
+		LangEnglish:            "No active Codex session to edit.",
+		LangChinese:            "没有可 edit 的活跃 Codex 会话。",
+		LangTraditionalChinese: "沒有可 edit 的活躍 Codex 會話。",
+		LangJapanese:           "edit できるアクティブな Codex セッションがありません。",
+		LangSpanish:            "No hay una sesión Codex activa para editar.",
+	},
+	MsgHistoryEditNoPlatform: {
+		LangEnglish:            "Cannot resolve the platform for this card action.",
+		LangChinese:            "无法解析此卡片操作对应的平台。",
+		LangTraditionalChinese: "無法解析此卡片操作對應的平台。",
+		LangJapanese:           "このカード操作のプラットフォームを解決できません。",
+		LangSpanish:            "No se puede resolver la plataforma para esta acción de tarjeta.",
+	},
+	MsgHistoryEditFailed: {
+		LangEnglish:            "Edit failed: %v",
+		LangChinese:            "edit 失败：%v",
+		LangTraditionalChinese: "edit 失敗：%v",
+		LangJapanese:           "edit に失敗しました: %v",
+		LangSpanish:            "Error en edit: %v",
+	},
+	MsgEditWaitingTitle: {
+		LangEnglish:            "Edit Previous Message",
+		LangChinese:            "编辑上一条消息",
+		LangTraditionalChinese: "編輯上一則訊息",
+		LangJapanese:           "前のメッセージを編集",
+		LangSpanish:            "Editar mensaje anterior",
+	},
+	MsgEditWaitingBody: {
+		LangEnglish:            "Replacing: %s\nSend the replacement message.",
+		LangChinese:            "将替换：%s\n发送新内容完成替换。",
+		LangTraditionalChinese: "將替換：%s\n傳送新內容完成替換。",
+		LangJapanese:           "置換対象: %s\n置換メッセージを送信してください。",
+		LangSpanish:            "Reemplazando: %s\nEnvíe el mensaje de reemplazo.",
+	},
+	MsgEditCancelButton: {
+		LangEnglish:            "Cancel",
+		LangChinese:            "取消",
+		LangTraditionalChinese: "取消",
+		LangJapanese:           "キャンセル",
+		LangSpanish:            "Cancelar",
+	},
+	MsgEditNoMessage: {
+		LangEnglish:            "No previous ordinary user message with an assistant reply was found.",
+		LangChinese:            "未找到上一条已有 LLM 回复的普通用户消息。",
+		LangTraditionalChinese: "未找到上一則已有 LLM 回覆的普通使用者訊息。",
+		LangJapanese:           "LLM 返信済みの直前の通常ユーザーメッセージが見つかりません。",
+		LangSpanish:            "No se encontró un mensaje ordinario anterior con respuesta del asistente.",
+	},
+	MsgEditSessionName: {
+		LangEnglish:            "edit",
+		LangChinese:            "编辑",
+		LangTraditionalChinese: "編輯",
+		LangJapanese:           "編集",
+		LangSpanish:            "edición",
+	},
 	MsgBannedWordBlocked: {
 		LangEnglish:            "⚠️ Your message was blocked because it contains a prohibited word.",
 		LangChinese:            "⚠️ 消息已被拦截，包含违禁词。",
@@ -3258,6 +3341,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "按列表序號刪除會話，參數: <序號> | 1,2,3 | 3-7 | 1,3-5,8",
 		LangJapanese:           "リスト番号でセッションを削除、引数: <番号> | 1,2,3 | 3-7 | 1,3-5,8",
 		LangSpanish:            "Eliminar sesión(es) por número de lista, args: <número> | 1,2,3 | 3-7 | 1,3-5,8",
+	},
+	MsgBuiltinCmdEdit: {
+		LangEnglish:            "Edit the previous ordinary user message",
+		LangChinese:            "编辑上一条普通用户消息",
+		LangTraditionalChinese: "編輯上一則普通使用者訊息",
+		LangJapanese:           "直前の通常ユーザーメッセージを編集",
+		LangSpanish:            "Editar el mensaje ordinario anterior",
 	},
 	MsgBuiltinCmdName: {
 		LangEnglish:            "Name a session for easy identification, arg: [number] <text>",

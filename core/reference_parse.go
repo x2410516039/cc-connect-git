@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
+	pathpkg "path"
 	"regexp"
 	"strings"
 )
@@ -110,25 +110,24 @@ func parseLocalReference(raw, workspaceDir string) (*localReference, bool) {
 			return nil, false
 		}
 		pathPart = u.Path
+		if len(pathPart) >= 3 && pathPart[0] == '/' && pathPart[2] == ':' && isASCIIAlpha(pathPart[1]) {
+			pathPart = pathPart[1:]
+		}
 	}
 	if !looksLikeLocalPath(pathPart) {
 		return nil, false
 	}
 	ref.pathOriginal = pathPart
-	ref.isRelative = !filepath.IsAbs(pathPart)
+	ref.isRelative = !isAbsLocalPath(pathPart)
 	if ref.isRelative {
 		if workspaceDir != "" {
-			ref.pathAbs = filepath.Clean(filepath.Join(workspaceDir, pathPart))
-			if rel, err := filepath.Rel(workspaceDir, ref.pathAbs); err == nil {
-				ref.pathRel = filepath.ToSlash(rel)
-			}
+			ref.pathAbs = joinLocalReferencePath(workspaceDir, pathPart)
+			ref.pathRel = relativeLocalReferencePath(workspaceDir, ref.pathAbs)
 		}
 	} else {
-		ref.pathAbs = filepath.Clean(pathPart)
+		ref.pathAbs = cleanReferencePath(pathPart)
 		if workspaceDir != "" {
-			if rel, err := filepath.Rel(workspaceDir, ref.pathAbs); err == nil {
-				ref.pathRel = filepath.ToSlash(rel)
-			}
+			ref.pathRel = relativeLocalReferencePath(workspaceDir, ref.pathAbs)
 		}
 	}
 	ref.kind = inferReferenceKind(ref)
@@ -153,8 +152,8 @@ func inferReferenceKind(ref *localReference) referenceKind {
 	if strings.HasSuffix(ref.pathOriginal, "/") {
 		return referenceKindDir
 	}
-	base := filepath.Base(strings.TrimSuffix(ref.pathOriginal, "/"))
-	if filepath.Ext(base) != "" {
+	base := pathpkg.Base(strings.TrimSuffix(cleanReferencePath(ref.pathOriginal), "/"))
+	if pathpkg.Ext(base) != "" {
 		return referenceKindFile
 	}
 	return referenceKindUnknown
@@ -164,17 +163,91 @@ func looksLikeLocalPath(path string) bool {
 	if path == "" || strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "//") {
 		return false
 	}
+	slash := strings.ReplaceAll(path, "\\", "/")
 	switch {
-	case strings.HasPrefix(path, "/"):
+	case isAbsLocalPath(path):
 		return true
-	case strings.HasPrefix(path, "./"), strings.HasPrefix(path, "../"):
+	case strings.HasPrefix(slash, "./"), strings.HasPrefix(slash, "../"):
 		return true
-	case strings.Contains(path, "/"):
+	case strings.Contains(slash, "/"):
 		return true
 	default:
-		base := filepath.Base(path)
-		return strings.Contains(base, ".")
+		base := pathpkg.Base(slash)
+		return pathpkg.Ext(base) != ""
 	}
+}
+
+func isAbsLocalPath(path string) bool {
+	slash := strings.ReplaceAll(strings.TrimSpace(path), "\\", "/")
+	if slash == "" {
+		return false
+	}
+	if strings.HasPrefix(slash, "/") {
+		return true
+	}
+	return len(slash) >= 3 && slash[1] == ':' && slash[2] == '/' && isASCIIAlpha(slash[0])
+}
+
+func cleanReferencePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	path = strings.ReplaceAll(path, "\\", "/")
+	if strings.HasPrefix(path, "//") && !strings.HasPrefix(path, "///") {
+		cleaned := pathpkg.Clean(strings.TrimPrefix(path, "//"))
+		if cleaned == "." {
+			return "//"
+		}
+		return "//" + cleaned
+	}
+	return pathpkg.Clean(path)
+}
+
+func joinLocalReferencePath(base, rel string) string {
+	base = strings.TrimSuffix(cleanReferencePath(base), "/")
+	rel = strings.TrimPrefix(cleanReferencePath(rel), "/")
+	if base == "" {
+		return rel
+	}
+	if rel == "" || rel == "." {
+		return base
+	}
+	return cleanReferencePath(base + "/" + rel)
+}
+
+func relativeLocalReferencePath(base, target string) string {
+	base = strings.TrimSuffix(cleanReferencePath(base), "/")
+	target = cleanReferencePath(target)
+	if base == "" || target == "" {
+		return ""
+	}
+	baseKey := localPathCompareKey(base)
+	targetKey := localPathCompareKey(target)
+	if targetKey == baseKey {
+		return "."
+	}
+	prefix := baseKey + "/"
+	if strings.HasPrefix(targetKey, prefix) {
+		rel := strings.TrimPrefix(target[len(base):], "/")
+		if rel == "" {
+			return "."
+		}
+		return rel
+	}
+	return ""
+}
+
+func localPathCompareKey(path string) string {
+	path = cleanReferencePath(path)
+	if len(path) >= 2 && path[1] == ':' && isASCIIAlpha(path[0]) {
+		return strings.ToLower(path)
+	}
+	return path
+}
+
+func isASCIIAlpha(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 func isWebURL(s string) bool {

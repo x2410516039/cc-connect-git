@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // Platform abstracts a messaging platform (Feishu, DingTalk, Slack, etc.).
@@ -286,6 +287,26 @@ type ToolAuthorizer interface {
 // conversation history from their backend session files.
 type HistoryProvider interface {
 	GetSessionHistory(ctx context.Context, sessionID string, limit int) ([]HistoryEntry, error)
+}
+
+// ConversationTurn is a backend conversation turn used by /edit.
+// Turns are returned newest-first by ConversationEditor.ListConversationTurns.
+type ConversationTurn struct {
+	ID              string
+	IndexFromNewest int
+	UserText        string
+	AssistantText   string
+	StartedAt       time.Time
+	CompletedAt     time.Time
+	Completed       bool
+}
+
+// ConversationEditor is an optional interface for agent sessions whose backend
+// can roll back persisted conversation history. The engine uses this for /edit
+// instead of mutating local Session.History only.
+type ConversationEditor interface {
+	ListConversationTurns(ctx context.Context, sessionID string, limit int) ([]ConversationTurn, error)
+	RollbackConversation(ctx context.Context, sessionID string, dropLastTurns int) (string, error)
 }
 
 // ProviderConfig holds API provider settings for an agent.

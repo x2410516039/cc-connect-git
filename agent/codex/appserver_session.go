@@ -58,6 +58,25 @@ type threadResumeResponse struct {
 	} `json:"thread"`
 }
 
+type threadRollbackResponse struct {
+	Thread struct {
+		ID string `json:"id"`
+	} `json:"thread"`
+}
+
+type threadTurnsListResponse struct {
+	Data       []appServerTurn `json:"data"`
+	NextCursor *string         `json:"nextCursor"`
+}
+
+type appServerTurn struct {
+	ID          string           `json:"id"`
+	Status      string           `json:"status"`
+	Items       []map[string]any `json:"items"`
+	StartedAt   *int64           `json:"startedAt"`
+	CompletedAt *int64           `json:"completedAt"`
+}
+
 type turnStartResponse struct {
 	Turn struct {
 		ID string `json:"id"`
@@ -195,9 +214,11 @@ func newAppServerSession(ctx context.Context, url, workDir, model, effort, mode,
 
 func (s *appServerSession) connect() error {
 	args := []string{"app-server"}
-	if strings.TrimSpace(s.url) != "" {
-		args = append(args, "--listen", strings.TrimSpace(s.url))
+	listenArgs, err := appServerListenArgs(s.url)
+	if err != nil {
+		return err
 	}
+	args = append(args, listenArgs...)
 	cmd := exec.CommandContext(s.ctx, "codex", args...)
 	cmd.Dir = s.workDir
 	env := append([]string(nil), s.extraEnv...)
@@ -236,6 +257,16 @@ func (s *appServerSession) connect() error {
 	go s.stderrLoop(stderr)
 	go s.waitLoop()
 	return nil
+}
+
+func appServerListenArgs(raw string) ([]string, error) {
+	listenURL := strings.ToLower(strings.TrimSpace(raw))
+	switch listenURL {
+	case "", "stdio", "stdio://":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("codex app-server app_server_url %q is not supported by the stdio transport; remove app_server_url or set it to stdio://", strings.TrimSpace(raw))
+	}
 }
 
 func (s *appServerSession) initialize() error {
@@ -453,6 +484,176 @@ func (s *appServerSession) Send(prompt string, images []core.ImageAttachment, fi
 	s.stateMu.Unlock()
 
 	return nil
+}
+
+func (s *appServerSession) ListConversationTurns(ctx context.Context, sessionID string, limit int) ([]core.ConversationTurn, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, fmt.Errorf("codex app-server thread id is empty")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+
+	turns := make([]core.ConversationTurn, 0, limit)
+	cursor := ""
+	for len(turns) < limit {
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+
+		pageLimit := limit - len(turns)
+		if pageLimit > 50 {
+			pageLimit = 50
+		}
+		params := map[string]any{
+			"threadId":      sessionID,
+			"limit":         pageLimit,
+			"itemsView":     "full",
+			"sortDirection": "desc",
+		}
+		if cursor != "" {
+			params["cursor"] = cursor
+		}
+
+		var resp threadTurnsListResponse
+		if err := s.request("thread/turns/list", params, &resp); err != nil {
+			return nil, fmt.Errorf("codex app-server thread/turns/list: %w", err)
+		}
+		if len(resp.Data) == 0 {
+			break
+		}
+		for _, turn := range resp.Data {
+			turns = append(turns, mapAppServerConversationTurn(turn, len(turns)))
+			if len(turns) >= limit {
+				break
+			}
+		}
+		if resp.NextCursor == nil || strings.TrimSpace(*resp.NextCursor) == "" {
+			break
+		}
+		cursor = strings.TrimSpace(*resp.NextCursor)
+	}
+	return turns, nil
+}
+
+func (s *appServerSession) RollbackConversation(ctx context.Context, sessionID string, dropLastTurns int) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return "", fmt.Errorf("codex app-server thread id is empty")
+	}
+	if dropLastTurns <= 0 {
+		return "", fmt.Errorf("dropLastTurns must be >= 1")
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+	}
+
+	var rollbackResp threadRollbackResponse
+	if err := s.request("thread/rollback", map[string]any{
+		"threadId": sessionID,
+		"numTurns": dropLastTurns,
+	}, &rollbackResp); err != nil {
+		return "", fmt.Errorf("codex app-server thread/rollback: %w", err)
+	}
+	newThreadID := strings.TrimSpace(rollbackResp.Thread.ID)
+	if newThreadID == "" {
+		newThreadID = sessionID
+	}
+
+	s.threadID.Store(newThreadID)
+	s.storeContextUsage(nil)
+	slog.Info("codex app-server thread rolled back for edit", "thread_id", newThreadID, "dropped_turns", dropLastTurns)
+	return newThreadID, nil
+}
+
+func mapAppServerConversationTurn(turn appServerTurn, indexFromNewest int) core.ConversationTurn {
+	var userParts []string
+	var assistantParts []string
+	for _, item := range turn.Items {
+		itemType, _ := item["type"].(string)
+		switch itemType {
+		case "userMessage":
+			if text := appServerUserMessageText(item); text != "" {
+				userParts = append(userParts, text)
+			}
+		case "agentMessage", "assistantMessage":
+			if text := appServerAgentMessageText(item); text != "" {
+				assistantParts = append(assistantParts, text)
+			}
+		}
+	}
+
+	return core.ConversationTurn{
+		ID:              strings.TrimSpace(turn.ID),
+		IndexFromNewest: indexFromNewest,
+		UserText:        strings.Join(userParts, "\n"),
+		AssistantText:   strings.Join(assistantParts, "\n"),
+		StartedAt:       unixSecondsPtr(turn.StartedAt),
+		CompletedAt:     unixSecondsPtr(turn.CompletedAt),
+		Completed:       strings.EqualFold(strings.TrimSpace(turn.Status), "completed"),
+	}
+}
+
+func appServerUserMessageText(item map[string]any) string {
+	if text, _ := item["text"].(string); strings.TrimSpace(text) != "" {
+		return text
+	}
+	content, ok := item["content"].([]any)
+	if !ok {
+		return ""
+	}
+	parts := make([]string, 0, len(content))
+	for _, raw := range content {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _ := m["type"].(string)
+		if typ != "text" && typ != "input_text" {
+			continue
+		}
+		if text, _ := m["text"].(string); strings.TrimSpace(text) != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func appServerAgentMessageText(item map[string]any) string {
+	if text, _ := item["text"].(string); strings.TrimSpace(text) != "" {
+		return text
+	}
+	content, ok := item["content"].([]any)
+	if !ok {
+		return ""
+	}
+	parts := make([]string, 0, len(content))
+	for _, raw := range content {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		typ, _ := m["type"].(string)
+		if typ != "text" && typ != "output_text" {
+			continue
+		}
+		if text, _ := m["text"].(string); strings.TrimSpace(text) != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func unixSecondsPtr(v *int64) time.Time {
+	if v == nil || *v <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(*v, 0)
 }
 
 func (s *appServerSession) stageImages(prompt string, images []core.ImageAttachment) (string, []string, error) {
@@ -747,7 +948,7 @@ func (s *appServerSession) handleItemStarted(item map[string]any) {
 	}
 
 	switch itemType {
-	case "agentMessage", "reasoning", "userMessage", "plan", "hookPrompt", "contextCompaction":
+	case "agentMessage", "assistantMessage", "reasoning", "userMessage", "plan", "hookPrompt", "contextCompaction":
 		return
 	}
 
@@ -790,8 +991,8 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 			s.emit(core.Event{Type: core.EventThinking, Content: text})
 		}
 
-	case "agentMessage":
-		text, _ := item["text"].(string)
+	case "agentMessage", "assistantMessage":
+		text := appServerAgentMessageText(item)
 		if strings.TrimSpace(text) != "" {
 			s.stateMu.Lock()
 			s.pendingMsgs = append(s.pendingMsgs, text)

@@ -2603,6 +2603,24 @@ func TestReplyWithCard_UsesCardSenderWhenSupported(t *testing.T) {
 	}
 }
 
+func TestReplyWithCard_FallsBackToTextWhenCardSenderFails(t *testing.T) {
+	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "card"}, cardErr: fmt.Errorf("card rejected")}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	card := NewCard().Title("History Edit", "yellow").Markdown("Pick a message.").Build()
+
+	e.replyWithCard(p, "ctx", card)
+
+	if len(p.repliedCards) != 0 {
+		t.Fatalf("replied cards = %d, want 0", len(p.repliedCards))
+	}
+	if len(p.sent) != 1 {
+		t.Fatalf("plain replies = %d, want 1", len(p.sent))
+	}
+	if got, want := p.sent[0], card.RenderText(); got != want {
+		t.Fatalf("fallback text = %q, want %q", got, want)
+	}
+}
+
 func TestReply_DoesNotTransformLocalReferencesWhenEnabled(t *testing.T) {
 	p := &stubPlatformEngine{n: "feishu"}
 	a := &namedStubModelModeAgent{name: "codex"}
@@ -2888,6 +2906,31 @@ func TestCmdDelete_NoArgsOnCardPlatformShowsDeleteModeCard(t *testing.T) {
 	}
 	if _, ok := findCardAction(card, "act:/delete-mode cancel"); !ok {
 		t.Fatal("expected delete mode cancel action")
+	}
+}
+
+func TestCmdDelete_NoArgsOnCardPlatformDeduplicatesAgentSessions(t *testing.T) {
+	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+	agent := &stubDeleteAgent{stubListAgent: stubListAgent{sessions: []AgentSessionInfo{
+		{ID: "session-1", Summary: "Newest One"},
+		{ID: "session-2", Summary: "Two"},
+		{ID: "session-1", Summary: "Older Duplicate"},
+	}}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	msg := &Message{SessionKey: "feishu:user1", ReplyCtx: "ctx"}
+
+	e.cmdDelete(p, msg, nil)
+
+	if len(p.repliedCards) != 1 {
+		t.Fatalf("replied cards = %d, want 1", len(p.repliedCards))
+	}
+	card := p.repliedCards[0]
+	if got := countCardActionValues(card, "act:/delete-mode toggle "); got != 2 {
+		t.Fatalf("toggle action count = %d, want 2", got)
+	}
+	text := card.RenderText()
+	if !strings.Contains(text, "Newest One") || strings.Contains(text, "Older Duplicate") {
+		t.Fatalf("card text = %q, want first duplicate only", text)
 	}
 }
 
@@ -5130,16 +5173,8 @@ func TestHandleCardNav_HelpSwitchesTabs(t *testing.T) {
 	}
 }
 
-func TestRenderHelpCard_AsyncCommandsUseCommandDispatch(t *testing.T) {
+func TestRenderHelpCard_SystemAsyncCommandsUseCommandDispatch(t *testing.T) {
 	e := NewEngine("test", &stubAgent{}, []Platform{&stubPlatformEngine{n: "test"}}, "", LangEnglish)
-
-	sessionCard := e.renderHelpGroupCard("session")
-	if _, ok := findCardAction(sessionCard, "cmd:/history"); !ok {
-		t.Fatal("expected /history help action to dispatch as command")
-	}
-	if _, ok := findCardAction(sessionCard, "nav:/history"); ok {
-		t.Fatal("expected /history help action not to use synchronous card nav")
-	}
 
 	systemCard := e.renderHelpGroupCard("system")
 	if _, ok := findCardAction(systemCard, "cmd:/doctor"); !ok {
@@ -6259,6 +6294,9 @@ func TestResumeFailureFallbackToFreshSession(t *testing.T) {
 	}
 	if calls[1] != "" {
 		t.Fatalf("second StartSession call = %q, want empty string", calls[1])
+	}
+	if got := session.GetAgentSessionID(); got != "stub-session" {
+		t.Fatalf("AgentSessionID after fallback = %q, want fresh session id", got)
 	}
 }
 
@@ -8042,8 +8080,12 @@ func TestResolveLocalDirPath_AcceptsSubdir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != sub {
-		t.Fatalf("expected %q, got %q", sub, got)
+	want := sub
+	if resolved, err := filepath.EvalSymlinks(sub); err == nil {
+		want = resolved
+	}
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
 	}
 }
 

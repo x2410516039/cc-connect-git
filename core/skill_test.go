@@ -38,10 +38,10 @@ func TestSkillRegistryListAll_FollowsDirectorySymlinks(t *testing.T) {
 	writeSkillFile(t, filepath.Join(targetRoot, "research", "hf-papers", "SKILL.md"), "HF papers skill")
 
 	if err := os.Symlink(filepath.Join(targetRoot, "automation"), filepath.Join(root, "automation")); err != nil {
-		t.Fatalf("symlink automation: %v", err)
+		t.Skipf("directory symlinks not supported in this environment: %v", err)
 	}
 	if err := os.Symlink(filepath.Join(targetRoot, "research"), filepath.Join(root, "research")); err != nil {
-		t.Fatalf("symlink research: %v", err)
+		t.Skipf("directory symlinks not supported in this environment: %v", err)
 	}
 
 	r := NewSkillRegistry()
@@ -65,7 +65,7 @@ func TestSkillRegistryListAll_DoesNotLoopOnDirectorySymlinks(t *testing.T) {
 	writeSkillFile(t, filepath.Join(root, "automation", "telegram-codex-bot", "SKILL.md"), "Telegram bot skill")
 
 	if err := os.Symlink(filepath.Join(root, "automation"), filepath.Join(root, "automation", "again")); err != nil {
-		t.Fatalf("symlink loop: %v", err)
+		t.Skipf("directory symlinks not supported in this environment: %v", err)
 	}
 
 	r := NewSkillRegistry()
