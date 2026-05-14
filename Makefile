@@ -36,7 +36,7 @@ PLATFORMS := \
 
 ALL_AGENTS    := codex
 ALL_PLATFORMS := feishu
-ALL_EXTRAS    := web
+ALL_EXTRAS    :=
 
 COMMA := ,
 
@@ -63,25 +63,19 @@ ifdef NO_WEB
   _EXCLUDE_TAGS += no_web
 endif
 
-_BUILD_TAGS := $(strip $(_EXCLUDE_TAGS))
+_BUILD_TAGS := $(strip $(_EXCLUDE_TAGS) no_web)
 _TAGS_FLAG  := $(if $(_BUILD_TAGS),-tags '$(_BUILD_TAGS)',)
-_NOWEB_TAGS := $(strip $(filter-out no_web,$(_BUILD_TAGS)) no_web)
-_NOWEB_TAGS_FLAG := $(if $(_NOWEB_TAGS),-tags '$(_NOWEB_TAGS)',)
 HOST_GOOS := $(if $(filter Windows_NT,$(OS)),windows,)
 BUILD_NOWEB_GOOS := $(if $(GOOS),$(GOOS),$(HOST_GOOS))
 BUILD_NOWEB_OUT ?= $(APP)$(if $(filter windows,$(BUILD_NOWEB_GOOS)),.exe,)
 
-.PHONY: build run clean test test-fast test-full test-smoke test-e2e test-release test-performance pre-test lint release release-all web
+.PHONY: build build-noweb run clean test test-fast test-full test-smoke test-e2e test-release test-performance pre-test lint release release-all
 
-web:
-	@if [ ! -d web/node_modules ]; then cd web && npm install; fi
-	cd web && npm run build
-
-build: web
+build:
 	go build $(_TAGS_FLAG) -ldflags "$(LDFLAGS)" -o $(APP) $(CMD)
 
 build-noweb:
-	go build $(_NOWEB_TAGS_FLAG) -ldflags "$(LDFLAGS)" -o $(BUILD_NOWEB_OUT) $(CMD)
+	go build $(_TAGS_FLAG) -ldflags "$(LDFLAGS)" -o $(BUILD_NOWEB_OUT) $(CMD)
 
 run: build
 	./$(APP)

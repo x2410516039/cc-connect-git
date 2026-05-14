@@ -48,7 +48,7 @@ const (
 )
 
 const (
-	messageRecallCheckTimeout = 2 * time.Second
+	messageRecallCheckTimeout  = 2 * time.Second
 	messageRecallPollInterval = 2 * time.Second
 	recalledStopLockWait      = 2 * time.Second
 )

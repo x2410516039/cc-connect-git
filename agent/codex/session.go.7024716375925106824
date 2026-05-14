@@ -34,14 +34,14 @@ type codexSession struct {
 	cliExtraArgs  []string
 	extraEnv      []string
 	events        chan core.Event
-	threadID      atomic.Value // stores string — Codex thread_id
-	ctx           context.Context
-	cancel        context.CancelFunc
-	wg            sync.WaitGroup
-	alive         atomic.Bool
-	closeOnce     sync.Once
-	cmdMu         sync.Mutex
-	cmds          map[*exec.Cmd]struct{}
+	threadID  atomic.Value // stores string — Codex thread_id
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	alive     atomic.Bool
+	closeOnce sync.Once
+	cmdMu     sync.Mutex
+	cmds      map[*exec.Cmd]struct{}
 
 	pendingMsgs []string // buffered agent_message texts awaiting classification
 
@@ -600,13 +600,8 @@ func codexToolSuccess(status string, exitCode *int) bool {
 	return s == "completed" || s == "success" || s == "succeeded" || s == "ok"
 }
 
-func loadCodexRuntimeConfig(ctx context.Context, cliBin string, cliExtraArgs []string, workDir string, extraEnv []string) (string, string, error) {
-	if strings.TrimSpace(cliBin) == "" {
-		cliBin = "codex"
-	}
-	args := append([]string(nil), cliExtraArgs...)
-	args = append(args, "app-server")
-	cmd := exec.CommandContext(ctx, cliBin, args...)
+func loadCodexRuntimeConfig(ctx context.Context, workDir string, extraEnv []string) (string, string, error) {
+	cmd := exec.CommandContext(ctx, "codex", "app-server")
 	cmd.Dir = workDir
 	prepareCmdForKill(cmd)
 	if len(extraEnv) > 0 {
@@ -788,7 +783,7 @@ func (cs *codexSession) runtimeConfig() (string, string) {
 	ctx, cancel := context.WithTimeout(cs.ctx, codexRuntimeConfigTimeout)
 	defer cancel()
 
-	model, effort, err := loadCodexRuntimeConfig(ctx, cs.cliBin, cs.cliExtraArgs, cs.workDir, cs.extraEnv)
+	model, effort, err := loadCodexRuntimeConfig(ctx, cs.workDir, cs.extraEnv)
 	if err == nil {
 		cs.runtimeCfgModel = model
 		cs.runtimeCfgEffort = effort
